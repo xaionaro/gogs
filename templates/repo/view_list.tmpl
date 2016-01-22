@@ -30,11 +30,7 @@
 				{{if $entry.IsSubModule}}
 					<td>
 						<span class="icon octicon octicon-file-submodule"></span>
-						{{if $commit.RefUrl}}
-							<a href="{{$commit.RefUrl}}">{{$entry.Name}}</a> @ <a href="{{$commit.RefUrl}}/commit/{{$commit.RefId}}">{{ShortSha $commit.RefId}}</a>
-						{{else}}
 							{{$entry.Name}} @ {{ShortSha $commit.RefId}}
-						{{end}}
 					</td>
 				{{else}}
 					<td class="name">
