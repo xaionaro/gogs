@@ -12,13 +12,13 @@ import (
 
 	"github.com/Unknwon/com"
 
-	"github.com/gogits/git-shell"
+	"github.com/gogits/git-module"
 
 	"github.com/gogits/gogs/models"
 	"github.com/gogits/gogs/modules/auth"
 	"github.com/gogits/gogs/modules/base"
+	"github.com/gogits/gogs/modules/context"
 	"github.com/gogits/gogs/modules/log"
-	"github.com/gogits/gogs/modules/middleware"
 	"github.com/gogits/gogs/modules/setting"
 )
 
@@ -27,8 +27,14 @@ const (
 	MIGRATE base.TplName = "repo/migrate"
 )
 
-func checkContextUser(ctx *middleware.Context, uid int64) *models.User {
-	orgs, err := models.GetOwnedOrgsByUserIDDesc(ctx.User.Id, "updated")
+func MustBeNotBare(ctx *context.Context) {
+	if ctx.Repo.Repository.IsBare {
+		ctx.Handle(404, "MustBeNotBare", nil)
+	}
+}
+
+func checkContextUser(ctx *context.Context, uid int64) *models.User {
+	orgs, err := models.GetOwnedOrgsByUserIDDesc(ctx.User.ID, "updated_unix")
 	if err != nil {
 		ctx.Handle(500, "GetOwnedOrgsByUserIDDesc", err)
 		return nil
@@ -36,7 +42,7 @@ func checkContextUser(ctx *middleware.Context, uid int64) *models.User {
 	ctx.Data["Orgs"] = orgs
 
 	// Not equal means current user is an organization.
-	if uid == ctx.User.Id || uid == 0 {
+	if uid == ctx.User.ID || uid == 0 {
 		return ctx.User
 	}
 
@@ -51,14 +57,14 @@ func checkContextUser(ctx *middleware.Context, uid int64) *models.User {
 	}
 
 	// Check ownership of organization.
-	if !org.IsOrganization() || !org.IsOwnedBy(ctx.User.Id) {
+	if !org.IsOrganization() || !(ctx.User.IsAdmin || org.IsOwnedBy(ctx.User.ID)) {
 		ctx.Error(403)
 		return nil
 	}
 	return org
 }
 
-func Create(ctx *middleware.Context) {
+func Create(ctx *context.Context) {
 	ctx.Data["Title"] = ctx.Tr("new_repo")
 
 	// Give default value for template to render.
@@ -78,7 +84,7 @@ func Create(ctx *middleware.Context) {
 	ctx.HTML(200, CREATE)
 }
 
-func handleCreateError(ctx *middleware.Context, owner *models.User, err error, name string, tpl base.TplName, form interface{}) {
+func handleCreateError(ctx *context.Context, owner *models.User, err error, name string, tpl base.TplName, form interface{}) {
 	switch {
 	case models.IsErrReachLimitOfRepo(err):
 		ctx.RenderWithErr(ctx.Tr("repo.form.reach_limit_of_creation", owner.RepoCreationNum()), tpl, form)
@@ -96,7 +102,7 @@ func handleCreateError(ctx *middleware.Context, owner *models.User, err error, n
 	}
 }
 
-func CreatePost(ctx *middleware.Context, form auth.CreateRepoForm) {
+func CreatePost(ctx *context.Context, form auth.CreateRepoForm) {
 	ctx.Data["Title"] = ctx.Tr("new_repo")
 
 	ctx.Data["Gitignores"] = models.Gitignores
@@ -130,7 +136,7 @@ func CreatePost(ctx *middleware.Context, form auth.CreateRepoForm) {
 	}
 
 	if repo != nil {
-		if errDelete := models.DeleteRepository(ctxUser.Id, repo.ID); errDelete != nil {
+		if errDelete := models.DeleteRepository(ctxUser.ID, repo.ID); errDelete != nil {
 			log.Error(4, "DeleteRepository: %v", errDelete)
 		}
 	}
@@ -138,7 +144,7 @@ func CreatePost(ctx *middleware.Context, form auth.CreateRepoForm) {
 	handleCreateError(ctx, ctxUser, err, "CreatePost", CREATE, &form)
 }
 
-func Migrate(ctx *middleware.Context) {
+func Migrate(ctx *context.Context) {
 	ctx.Data["Title"] = ctx.Tr("new_migrate")
 	ctx.Data["private"] = ctx.User.LastRepoVisibility
 	ctx.Data["IsForcedPrivate"] = setting.Repository.ForcePrivate
@@ -153,7 +159,7 @@ func Migrate(ctx *middleware.Context) {
 	ctx.HTML(200, MIGRATE)
 }
 
-func MigratePost(ctx *middleware.Context, form auth.MigrateRepoForm) {
+func MigratePost(ctx *context.Context, form auth.MigrateRepoForm) {
 	ctx.Data["Title"] = ctx.Tr("new_migrate")
 
 	ctxUser := checkContextUser(ctx, form.Uid)
@@ -202,7 +208,7 @@ func MigratePost(ctx *middleware.Context, form auth.MigrateRepoForm) {
 	}
 
 	if repo != nil {
-		if errDelete := models.DeleteRepository(ctxUser.Id, repo.ID); errDelete != nil {
+		if errDelete := models.DeleteRepository(ctxUser.ID, repo.ID); errDelete != nil {
 			log.Error(4, "DeleteRepository: %v", errDelete)
 		}
 	}
@@ -221,18 +227,18 @@ func MigratePost(ctx *middleware.Context, form auth.MigrateRepoForm) {
 	handleCreateError(ctx, ctxUser, err, "MigratePost", MIGRATE, &form)
 }
 
-func Action(ctx *middleware.Context) {
+func Action(ctx *context.Context) {
 	var err error
 	switch ctx.Params(":action") {
 	case "watch":
-		err = models.WatchRepo(ctx.User.Id, ctx.Repo.Repository.ID, true)
+		err = models.WatchRepo(ctx.User.ID, ctx.Repo.Repository.ID, true)
 	case "unwatch":
-		err = models.WatchRepo(ctx.User.Id, ctx.Repo.Repository.ID, false)
+		err = models.WatchRepo(ctx.User.ID, ctx.Repo.Repository.ID, false)
 	case "star":
-		err = models.StarRepo(ctx.User.Id, ctx.Repo.Repository.ID, true)
+		err = models.StarRepo(ctx.User.ID, ctx.Repo.Repository.ID, true)
 	case "unstar":
-		err = models.StarRepo(ctx.User.Id, ctx.Repo.Repository.ID, false)
-	case "desc":
+		err = models.StarRepo(ctx.User.ID, ctx.Repo.Repository.ID, false)
+	case "desc": // FIXME: this is not used
 		if !ctx.Repo.IsOwner() {
 			ctx.Error(404)
 			return
@@ -244,11 +250,7 @@ func Action(ctx *middleware.Context) {
 	}
 
 	if err != nil {
-		log.Error(4, "Action(%s): %v", ctx.Params(":action"), err)
-		ctx.JSON(200, map[string]interface{}{
-			"ok":  false,
-			"err": err.Error(),
-		})
+		ctx.Handle(500, fmt.Sprintf("Action (%s)", ctx.Params(":action")), err)
 		return
 	}
 
@@ -259,7 +261,7 @@ func Action(ctx *middleware.Context) {
 	ctx.Redirect(redirectTo)
 }
 
-func Download(ctx *middleware.Context) {
+func Download(ctx *context.Context) {
 	var (
 		uri         = ctx.Params("*")
 		refName     string
@@ -278,6 +280,7 @@ func Download(ctx *middleware.Context) {
 		archivePath = path.Join(ctx.Repo.GitRepo.Path, "archives/targz")
 		archiveType = git.TARGZ
 	default:
+		log.Trace("Unknown format: %s", uri)
 		ctx.Error(404)
 		return
 	}
@@ -315,7 +318,7 @@ func Download(ctx *middleware.Context) {
 			return
 		}
 	} else {
-		ctx.Error(404)
+		ctx.Handle(404, "Download", nil)
 		return
 	}
 
@@ -327,5 +330,5 @@ func Download(ctx *middleware.Context) {
 		}
 	}
 
-	ctx.ServeFile(archivePath, ctx.Repo.Repository.Name+"-"+base.ShortSha(commit.ID.String())+ext)
+	ctx.ServeFile(archivePath, ctx.Repo.Repository.Name+"-"+refName+ext)
 }

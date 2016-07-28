@@ -7,13 +7,11 @@ package org
 import (
 	"strings"
 
-	"github.com/Unknwon/com"
-
 	"github.com/gogits/gogs/models"
 	"github.com/gogits/gogs/modules/auth"
 	"github.com/gogits/gogs/modules/base"
+	"github.com/gogits/gogs/modules/context"
 	"github.com/gogits/gogs/modules/log"
-	"github.com/gogits/gogs/modules/middleware"
 	"github.com/gogits/gogs/modules/setting"
 	"github.com/gogits/gogs/routers/user"
 )
@@ -24,13 +22,13 @@ const (
 	SETTINGS_HOOKS   base.TplName = "org/settings/hooks"
 )
 
-func Settings(ctx *middleware.Context) {
+func Settings(ctx *context.Context) {
 	ctx.Data["Title"] = ctx.Tr("org.settings")
 	ctx.Data["PageIsSettingsOptions"] = true
 	ctx.HTML(200, SETTINGS_OPTIONS)
 }
 
-func SettingsPost(ctx *middleware.Context, form auth.UpdateOrgSettingForm) {
+func SettingsPost(ctx *context.Context, form auth.UpdateOrgSettingForm) {
 	ctx.Data["Title"] = ctx.Tr("org.settings")
 	ctx.Data["PageIsSettingsOptions"] = true
 
@@ -43,7 +41,7 @@ func SettingsPost(ctx *middleware.Context, form auth.UpdateOrgSettingForm) {
 
 	// Check if organization name has been changed.
 	if org.LowerName != strings.ToLower(form.Name) {
-		isExist, err := models.IsUserExist(org.Id, form.Name)
+		isExist, err := models.IsUserExist(org.ID, form.Name)
 		if err != nil {
 			ctx.Handle(500, "IsUserExist", err)
 			return
@@ -60,6 +58,8 @@ func SettingsPost(ctx *middleware.Context, form auth.UpdateOrgSettingForm) {
 			}
 			return
 		}
+		// reset ctx.org.OrgLink with new name
+		ctx.Org.OrgLink = setting.AppSubUrl + "/org/" + form.Name
 		log.Trace("Organization name changed: %s -> %s", org.Name, form.Name)
 	}
 	// In case it's just a case change.
@@ -83,7 +83,7 @@ func SettingsPost(ctx *middleware.Context, form auth.UpdateOrgSettingForm) {
 	ctx.Redirect(ctx.Org.OrgLink + "/settings")
 }
 
-func SettingsAvatar(ctx *middleware.Context, form auth.UploadAvatarForm) {
+func SettingsAvatar(ctx *context.Context, form auth.UploadAvatarForm) {
 	form.Enable = true
 	if err := user.UpdateAvatarSetting(ctx, form, ctx.Org.Organization); err != nil {
 		ctx.Flash.Error(err.Error())
@@ -94,7 +94,15 @@ func SettingsAvatar(ctx *middleware.Context, form auth.UploadAvatarForm) {
 	ctx.Redirect(ctx.Org.OrgLink + "/settings")
 }
 
-func SettingsDelete(ctx *middleware.Context) {
+func SettingsDeleteAvatar(ctx *context.Context) {
+	if err := ctx.Org.Organization.DeleteAvatar(); err != nil {
+		ctx.Flash.Error(err.Error())
+	}
+
+	ctx.Redirect(ctx.Org.OrgLink + "/settings")
+}
+
+func SettingsDelete(ctx *context.Context) {
 	ctx.Data["Title"] = ctx.Tr("org.settings")
 	ctx.Data["PageIsSettingsDelete"] = true
 
@@ -126,25 +134,13 @@ func SettingsDelete(ctx *middleware.Context) {
 	ctx.HTML(200, SETTINGS_DELETE)
 }
 
-func Webhooks(ctx *middleware.Context) {
+func Webhooks(ctx *context.Context) {
 	ctx.Data["Title"] = ctx.Tr("org.settings")
 	ctx.Data["PageIsSettingsHooks"] = true
 	ctx.Data["BaseLink"] = ctx.Org.OrgLink
 	ctx.Data["Description"] = ctx.Tr("org.settings.hooks_desc")
 
-	// Delete web hook.
-	remove := com.StrTo(ctx.Query("remove")).MustInt64()
-	if remove > 0 {
-		if err := models.DeleteWebhook(remove); err != nil {
-			ctx.Handle(500, "DeleteWebhook", err)
-			return
-		}
-		ctx.Flash.Success(ctx.Tr("repo.settings.remove_hook_success"))
-		ctx.Redirect(ctx.Org.OrgLink + "/settings/hooks")
-		return
-	}
-
-	ws, err := models.GetWebhooksByOrgId(ctx.Org.Organization.Id)
+	ws, err := models.GetWebhooksByOrgID(ctx.Org.Organization.ID)
 	if err != nil {
 		ctx.Handle(500, "GetWebhooksByOrgId", err)
 		return
@@ -154,9 +150,9 @@ func Webhooks(ctx *middleware.Context) {
 	ctx.HTML(200, SETTINGS_HOOKS)
 }
 
-func DeleteWebhook(ctx *middleware.Context) {
-	if err := models.DeleteWebhook(ctx.QueryInt64("id")); err != nil {
-		ctx.Flash.Error("DeleteWebhook: " + err.Error())
+func DeleteWebhook(ctx *context.Context) {
+	if err := models.DeleteWebhookByOrgID(ctx.Org.Organization.ID, ctx.QueryInt64("id")); err != nil {
+		ctx.Flash.Error("DeleteWebhookByOrgID: " + err.Error())
 	} else {
 		ctx.Flash.Success(ctx.Tr("repo.settings.webhook_deletion_success"))
 	}

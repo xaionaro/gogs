@@ -12,13 +12,13 @@ import (
 	"github.com/Unknwon/com"
 	"github.com/go-macaron/binding"
 	"github.com/go-macaron/session"
+	gouuid "github.com/satori/go.uuid"
 	"gopkg.in/macaron.v1"
 
 	"github.com/gogits/gogs/models"
 	"github.com/gogits/gogs/modules/base"
 	"github.com/gogits/gogs/modules/log"
 	"github.com/gogits/gogs/modules/setting"
-	"github.com/gogits/gogs/modules/uuid"
 )
 
 func IsAPIPath(url string) bool {
@@ -49,14 +49,14 @@ func SignedInID(ctx *macaron.Context, sess session.Store) int64 {
 		if len(tokenSHA) > 0 {
 			t, err := models.GetAccessTokenBySHA(tokenSHA)
 			if err != nil {
-				if models.IsErrAccessTokenNotExist(err) {
+				if models.IsErrAccessTokenNotExist(err) || models.IsErrAccessTokenEmpty(err) {
 					log.Error(4, "GetAccessTokenBySHA: %v", err)
 				}
 				return 0
 			}
 			t.Updated = time.Now()
-			if err = models.UpdateAccessToekn(t); err != nil {
-				log.Error(4, "UpdateAccessToekn: %v", err)
+			if err = models.UpdateAccessToken(t); err != nil {
+				log.Error(4, "UpdateAccessToken: %v", err)
 			}
 			return t.UID
 		}
@@ -102,7 +102,7 @@ func SignedInUser(ctx *macaron.Context, sess session.Store) (*models.User, bool)
 					if setting.Service.EnableReverseProxyAutoRegister {
 						u := &models.User{
 							Name:     webAuthUser,
-							Email:    uuid.NewV4().String() + "@localhost",
+							Email:    gouuid.NewV4().String() + "@localhost",
 							Passwd:   webAuthUser,
 							IsActive: true,
 						}

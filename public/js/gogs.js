@@ -18,6 +18,9 @@ function initCommentPreviewTab($form) {
                 var $preview_tab = $form.find('.tab.segment[data-tab="' + $tab_menu.data('preview') + '"]');
                 $preview_tab.html(data);
                 emojify.run($preview_tab[0]);
+                $('pre code', $preview_tab[0]).each(function (i, block) {
+                    hljs.highlightBlock(block);
+                });
             }
         );
     });
@@ -319,8 +322,7 @@ function initRepository() {
         };
         $('#edit-title').click(editTitleToggle);
         $('#cancel-edit-title').click(editTitleToggle);
-        $('#save-edit-title').click(editTitleToggle).
-        click(function () {
+        $('#save-edit-title').click(editTitleToggle).click(function () {
             if ($edit_input.val().length == 0 ||
                 $edit_input.val() == $issue_title.text()) {
                 $edit_input.val($issue_title.text());
@@ -340,7 +342,7 @@ function initRepository() {
 
         // Edit issue or comment content
         $('.edit-content').click(function () {
-            var $segment = $(this).parent().parent().next();
+            var $segment = $(this).parent().parent().parent().next();
             var $edit_content_zone = $segment.find('.edit-content-zone');
             var $render_content = $segment.find('.render-content');
             var $raw_content = $segment.find('.raw-content');
@@ -382,6 +384,9 @@ function initRepository() {
                             } else {
                                 $render_content.html(data.content);
                                 emojify.run($render_content[0]);
+                                $('pre code', $render_content[0]).each(function (i, block) {
+                                    hljs.highlightBlock(block);
+                                });
                             }
                         });
                 });
@@ -396,6 +401,19 @@ function initRepository() {
                 $textarea.val($raw_content.text());
             }
             $textarea.focus();
+            return false;
+        });
+
+        // Delete comment
+        $('.delete-comment').click(function () {
+            var $this = $(this);
+            if (confirm($this.data('locale'))) {
+                $.post($this.data('url'), {
+                    "_csrf": csrf
+                }).success(function() {
+                    $('#' + $this.data('comment-id')).remove();
+                });
+            }
             return false;
         });
 
@@ -434,12 +452,14 @@ function initRepository() {
         $('#repo-clone-url').val($(this).data('link'));
         $(this).addClass('blue');
         $('#repo-clone-https').removeClass('blue');
+        localStorage.setItem('repo-clone-protocol', 'ssh');
     });
     $('#repo-clone-https').click(function () {
         $('.clone-url').text($(this).data('link'));
         $('#repo-clone-url').val($(this).data('link'));
         $(this).addClass('blue');
         $('#repo-clone-ssh').removeClass('blue');
+        localStorage.setItem('repo-clone-protocol', 'https');
     });
     $('#repo-clone-url').click(function () {
         $(this).select();
@@ -449,6 +469,20 @@ function initRepository() {
     if ($('.repository.compare.pull').length > 0) {
         initFilterSearchDropdown('.choose.branch .dropdown');
     }
+}
+
+function initRepositoryCollaboration(){
+    console.log('initRepositoryCollaboration');
+
+// Change collaborator access mode
+    $('.access-mode.menu .item').click(function(){
+        var $menu = $(this).parent();
+        $.post($menu.data('url'), {
+            "_csrf": csrf,
+            "uid": $menu.data('uid'),
+            "mode": $(this).data('value')
+        })
+    });
 }
 
 function initWiki() {
@@ -462,12 +496,10 @@ function initWiki() {
         var simplemde = new SimpleMDE({
             autoDownloadFontAwesome: false,
             element: $edit_area[0],
+            forceSync: true,
             previewRender: function (plainText, preview) { // Async method
                 setTimeout(function () {
-                    if ($('.editor-preview-active').length == 0) {
-                        return;
-                    }
-
+                    // FIXME: still send render request when return back to edit mode
                     $.post($edit_area.data('url'), {
                             "_csrf": csrf,
                             "mode": "gfm",
@@ -516,10 +548,8 @@ function initOrganization() {
     }
 }
 
-function initUser() {
-    if ($('.user').length == 0) {
-        return;
-    }
+function initUserSettings() {
+    console.log('initUserSettings');
 
     // Options
     if ($('.user.settings.profile').length > 0) {
@@ -595,6 +625,13 @@ function initAdmin() {
         });
     }
 
+    function onSecurityProtocolChange() {
+        if ($('#security_protocol').val() > 0) {
+            $('.has-tls').show();
+        } else {
+            $('.has-tls').hide();
+        }
+    }
 
     // New authentication
     if ($('.admin.new.authentication').length > 0) {
@@ -603,6 +640,7 @@ function initAdmin() {
             $('.dldap').hide();
             $('.smtp').hide();
             $('.pam').hide();
+            $('.has-tls').hide();
 
             var auth_type = $(this).val();
             switch (auth_type) {
@@ -611,6 +649,7 @@ function initAdmin() {
                     break;
                 case '3':     // SMTP
                     $('.smtp').show();
+                    $('.has-tls').show();
                     break;
                 case '4':     // PAM
                     $('.pam').show();
@@ -619,7 +658,19 @@ function initAdmin() {
                     $('.dldap').show();
                     break;
             }
+
+            if (auth_type == '2' || auth_type == '5') {
+                onSecurityProtocolChange()
+            }
         });
+        $('#security_protocol').change(onSecurityProtocolChange)
+    }
+    // Edit authentication
+    if ($('.admin.edit.authentication').length > 0) {
+        var auth_type = $('#auth_type').val();
+        if (auth_type == '2' || auth_type == '5') {
+            $('#security_protocol').change(onSecurityProtocolChange);
+        }
     }
 
     // Notice
@@ -791,10 +842,7 @@ $(document).ready(function () {
 
     // Show exact time
     $('.time-since').each(function () {
-        $(this).addClass('poping up').
-        attr('data-content', $(this).attr('title')).
-        attr('data-variation', 'inverted tiny').
-        attr('title', '');
+        $(this).addClass('poping up').attr('data-content', $(this).attr('title')).attr('data-variation', 'inverted tiny').attr('title', '');
     });
 
     // Semantic UI modules.
@@ -870,9 +918,13 @@ $(document).ready(function () {
 
     // Emojify
     emojify.setConfig({
-        img_dir: suburl + '/img/emoji'
+        img_dir: suburl + '/img/emoji',
+        ignore_emoticons: true
     });
-    emojify.run();
+    var hasEmoji = document.getElementsByClassName('has-emoji');
+    for (var i = 0; i < hasEmoji.length; i++) {
+        emojify.run(hasEmoji[i]);
+    }
 
     // Clipboard JS
     var clipboard = new Clipboard('.clipboard');
@@ -919,6 +971,14 @@ $(document).ready(function () {
     $('.show-modal.button').click(function () {
         $($(this).data('modal')).modal('show');
     });
+    $('.delete-post.button').click(function(){
+        var $this = $(this);
+        $.post($this.data('request-url'),{
+            "_csrf": csrf
+        }).done(function(){
+            window.location.href = $this.data('done-url');
+        });
+    });
 
     // Set anchor.
     $('.markdown').each(function () {
@@ -944,15 +1004,26 @@ $(document).ready(function () {
     searchUsers();
     searchRepositories();
 
-
     initCommentForm();
     initInstall();
     initRepository();
     initWiki();
     initOrganization();
-    initUser();
     initWebhook();
     initAdmin();
+
+    var routes = {
+        'div.user.settings': initUserSettings,
+        'div.repository.settings.collaboration': initRepositoryCollaboration
+    };
+
+    var selector;
+    for (selector in routes) {
+        if ($(selector).length > 0) {
+            routes[selector]();
+            break;
+        }
+    }
 });
 
 $(window).load(function () {
@@ -1007,10 +1078,14 @@ $(window).load(function () {
         var $num_list = $('.code-view .lines-num');
 
         // Building blocks.
+        var $toappendblock = [];
+        var $toappendnum_list = [];
         for (var i = 0; i < lines.length; i++) {
-            $block.append('<li class="L' + (i + 1) + '" rel="L' + (i + 1) + '">' + lines[i] + '</li>');
-            $num_list.append('<span id="L' + (i + 1) + '">' + (i + 1) + '</span>');
+            $toappendblock.push('<li class="L' + (i + 1) + '" rel="L' + (i + 1) + '">' + lines[i] + '</li>');
+            $toappendnum_list.push('<span id="L' + (i + 1) + '">' + (i + 1) + '</span>');
         }
+        $block.append($toappendblock.join(''));
+        $num_list.append($toappendnum_list.join(''));
 
         $(document).on('click', '.lines-num span', function (e) {
             var $select = $(this);
@@ -1037,4 +1112,24 @@ $(window).load(function () {
             }
         }).trigger('hashchange');
     }
+
+    // Repo clone url.
+    if ($('#repo-clone-url').length > 0) {
+        switch (localStorage.getItem('repo-clone-protocol')) {
+            case 'ssh':
+                if ($('#repo-clone-ssh').click().length === 0) {
+                    $('#repo-clone-https').click();
+                }
+                ;
+                break;
+            default:
+                $('#repo-clone-https').click();
+                break;
+        }
+    }
+});
+
+$(function() {
+    if ($('.user.signin').length >0) return;
+	$('form').areYouSure();
 });

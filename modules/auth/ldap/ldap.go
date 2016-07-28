@@ -16,12 +16,21 @@ import (
 	"github.com/gogits/gogs/modules/log"
 )
 
+type SecurityProtocol int
+
+// Note: new type must be added at the end of list to maintain compatibility.
+const (
+	SECURITY_PROTOCOL_UNENCRYPTED SecurityProtocol = iota
+	SECURITY_PROTOCOL_LDAPS
+	SECURITY_PROTOCOL_START_TLS
+)
+
 // Basic LDAP authentication service
 type Source struct {
 	Name              string // canonical name (ie. corporate.ad)
 	Host              string // LDAP host
 	Port              int    // port number
-	UseSSL            bool   // Use SSL
+	SecurityProtocol  SecurityProtocol
 	SkipVerify        bool
 	BindDN            string // DN to bind with
 	BindPassword      string // Bind DN password
@@ -31,6 +40,7 @@ type Source struct {
 	AttributeName     string // First name attribute
 	AttributeSurname  string // Surname attribute
 	AttributeMail     string // E-mail attribute
+	AttributesInBind  bool   // fetch attributes in bind context (not user)
 	Filter            string // Query filter to validate entry
 	AdminFilter       string // Query filter to check if user is admin
 	Enabled           bool   // if this source is disabled
@@ -58,18 +68,10 @@ func (ls *Source) sanitizedUserDN(username string) (string, bool) {
 	return fmt.Sprintf(ls.UserDN, username), true
 }
 
-func (ls *Source) FindUserDN(name string) (string, bool) {
-	l, err := ldapDial(ls)
-	if err != nil {
-		log.Error(4, "LDAP Connect error, %s:%v", ls.Host, err)
-		ls.Enabled = false
-		return "", false
-	}
-	defer l.Close()
-
+func (ls *Source) findUserDN(l *ldap.Conn, name string) (string, bool) {
 	log.Trace("Search for LDAP user: %s", name)
 	if ls.BindDN != "" && ls.BindPassword != "" {
-		err = l.Bind(ls.BindDN, ls.BindPassword)
+		err := l.Bind(ls.BindDN, ls.BindPassword)
 		if err != nil {
 			log.Debug("Failed to bind as BindDN[%s]: %v", ls.BindDN, err)
 			return "", false
@@ -85,7 +87,7 @@ func (ls *Source) FindUserDN(name string) (string, bool) {
 		return "", false
 	}
 
-	log.Trace("Searching using filter %s", userFilter)
+	log.Trace("Searching for DN using filter %s and base %s", userFilter, ls.UserBase)
 	search := ldap.NewSearchRequest(
 		ls.UserBase, ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 0, 0,
 		false, userFilter, []string{}, nil)
@@ -109,8 +111,53 @@ func (ls *Source) FindUserDN(name string) (string, bool) {
 	return userDN, true
 }
 
+func dial(ls *Source) (*ldap.Conn, error) {
+	log.Trace("Dialing LDAP with security protocol (%v) without verifying: %v", ls.SecurityProtocol, ls.SkipVerify)
+
+	tlsCfg := &tls.Config{
+		ServerName:         ls.Host,
+		InsecureSkipVerify: ls.SkipVerify,
+	}
+	if ls.SecurityProtocol == SECURITY_PROTOCOL_LDAPS {
+		return ldap.DialTLS("tcp", fmt.Sprintf("%s:%d", ls.Host, ls.Port), tlsCfg)
+	}
+
+	conn, err := ldap.Dial("tcp", fmt.Sprintf("%s:%d", ls.Host, ls.Port))
+	if err != nil {
+		return nil, fmt.Errorf("Dial: %v", err)
+	}
+
+	if ls.SecurityProtocol == SECURITY_PROTOCOL_START_TLS {
+		if err = conn.StartTLS(tlsCfg); err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("StartTLS: %v", err)
+		}
+	}
+
+	return conn, nil
+}
+
+func bindUser(l *ldap.Conn, userDN, passwd string) error {
+	log.Trace("Binding with userDN: %s", userDN)
+	err := l.Bind(userDN, passwd)
+	if err != nil {
+		log.Debug("LDAP auth. failed for %s, reason: %v", userDN, err)
+		return err
+	}
+	log.Trace("Bound successfully with userDN: %s", userDN)
+	return err
+}
+
 // searchEntry : search an LDAP source if an entry (name, passwd) is valid and in the specific filter
 func (ls *Source) SearchEntry(name, passwd string, directBind bool) (string, string, string, string, bool, bool) {
+	l, err := dial(ls)
+	if err != nil {
+		log.Error(4, "LDAP Connect error, %s:%v", ls.Host, err)
+		ls.Enabled = false
+		return "", "", "", "", false, false
+	}
+	defer l.Close()
+
 	var userDN string
 	if directBind {
 		log.Trace("LDAP will bind directly via UserDN template: %s", ls.UserDN)
@@ -124,36 +171,29 @@ func (ls *Source) SearchEntry(name, passwd string, directBind bool) (string, str
 		log.Trace("LDAP will use BindDN.")
 
 		var found bool
-		userDN, found = ls.FindUserDN(name)
+		userDN, found = ls.findUserDN(l, name)
 		if !found {
 			return "", "", "", "", false, false
 		}
 	}
 
-	l, err := ldapDial(ls)
-	if err != nil {
-		log.Error(4, "LDAP Connect error (%s): %v", ls.Host, err)
-		ls.Enabled = false
-		return "", "", "", "", false, false
-	}
-	defer l.Close()
-
-	log.Trace("Binding with userDN: %s", userDN)
-	err = l.Bind(userDN, passwd)
-	if err != nil {
-		log.Debug("LDAP auth. failed for %s, reason: %v", userDN, err)
-		return "", "", "", "", false, false
+	if directBind || !ls.AttributesInBind {
+		// binds user (checking password) before looking-up attributes in user context
+		err = bindUser(l, userDN, passwd)
+		if err != nil {
+			return "", "", "", "", false, false
+		}
 	}
 
-	log.Trace("Bound successfully with userDN: %s", userDN)
 	userFilter, ok := ls.sanitizedUserQuery(name)
 	if !ok {
 		return "", "", "", "", false, false
 	}
 
+	log.Trace("Fetching attributes '%v', '%v', '%v', '%v' with filter %s and base %s", ls.AttributeUsername, ls.AttributeName, ls.AttributeSurname, ls.AttributeMail, userFilter, userDN)
 	search := ldap.NewSearchRequest(
 		userDN, ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 0, 0, false, userFilter,
-		[]string{ls.AttributeName, ls.AttributeSurname, ls.AttributeMail},
+		[]string{ls.AttributeUsername, ls.AttributeName, ls.AttributeSurname, ls.AttributeMail},
 		nil)
 
 	sr, err := l.Search(search)
@@ -170,13 +210,14 @@ func (ls *Source) SearchEntry(name, passwd string, directBind bool) (string, str
 		return "", "", "", "", false, false
 	}
 
-	username_attr := sr.Entries[0].GetAttributeValue(ls.AttributeUsername)
-	name_attr := sr.Entries[0].GetAttributeValue(ls.AttributeName)
-	sn_attr := sr.Entries[0].GetAttributeValue(ls.AttributeSurname)
-	mail_attr := sr.Entries[0].GetAttributeValue(ls.AttributeMail)
+	username := sr.Entries[0].GetAttributeValue(ls.AttributeUsername)
+	firstname := sr.Entries[0].GetAttributeValue(ls.AttributeName)
+	surname := sr.Entries[0].GetAttributeValue(ls.AttributeSurname)
+	mail := sr.Entries[0].GetAttributeValue(ls.AttributeMail)
 
-	admin_attr := false
+	isAdmin := false
 	if len(ls.AdminFilter) > 0 {
+		log.Trace("Checking admin with filter %s and base %s", ls.AdminFilter, userDN)
 		search = ldap.NewSearchRequest(
 			userDN, ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 0, 0, false, ls.AdminFilter,
 			[]string{ls.AttributeName},
@@ -188,20 +229,17 @@ func (ls *Source) SearchEntry(name, passwd string, directBind bool) (string, str
 		} else if len(sr.Entries) < 1 {
 			log.Error(4, "LDAP Admin Search failed")
 		} else {
-			admin_attr = true
+			isAdmin = true
 		}
 	}
 
-	return username_attr, name_attr, sn_attr, mail_attr, admin_attr, true
-}
-
-func ldapDial(ls *Source) (*ldap.Conn, error) {
-	if ls.UseSSL {
-		log.Debug("Using TLS for LDAP without verifying: %v", ls.SkipVerify)
-		return ldap.DialTLS("tcp", fmt.Sprintf("%s:%d", ls.Host, ls.Port), &tls.Config{
-			InsecureSkipVerify: ls.SkipVerify,
-		})
-	} else {
-		return ldap.Dial("tcp", fmt.Sprintf("%s:%d", ls.Host, ls.Port))
+	if !directBind && ls.AttributesInBind {
+		// binds user (checking password) after looking-up attributes in BindDN context
+		err = bindUser(l, userDN, passwd)
+		if err != nil {
+			return "", "", "", "", false, false
+		}
 	}
+
+	return username, firstname, surname, mail, isAdmin, true
 }

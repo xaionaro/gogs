@@ -57,7 +57,7 @@ func (f *MigrateRepoForm) Validate(ctx *macaron.Context, errs binding.Errors) bi
 // It also checks if given user has permission when remote address
 // is actually a local path.
 func (f MigrateRepoForm) ParseRemoteAddr(user *models.User) (string, error) {
-	remoteAddr := f.CloneAddr
+	remoteAddr := strings.TrimSpace(f.CloneAddr)
 
 	// Remote address can be HTTP/HTTPS/Git URL or local path.
 	if strings.HasPrefix(remoteAddr, "http://") ||
@@ -88,6 +88,7 @@ type RepoSettingForm struct {
 	Interval      int
 	MirrorAddress string
 	Private       bool
+	EnablePrune   bool
 
 	// Advanced settings
 	EnableWiki            bool
@@ -96,6 +97,7 @@ type RepoSettingForm struct {
 	EnableIssues          bool
 	EnableExternalTracker bool
 	TrackerURLFormat      string
+	TrackerIssueStyle     string
 	EnablePulls           bool
 }
 
@@ -141,7 +143,7 @@ func (f *NewWebhookForm) Validate(ctx *macaron.Context, errs binding.Errors) bin
 }
 
 type NewSlackHookForm struct {
-	PayloadURL string `binding:"Required;Url`
+	PayloadURL string `binding:"Required;Url"`
 	Channel    string `binding:"Required"`
 	Username   string
 	IconURL    string
@@ -239,7 +241,7 @@ func (f *NewReleaseForm) Validate(ctx *macaron.Context, errs binding.Errors) bin
 
 type EditReleaseForm struct {
 	Title      string `form:"title" binding:"Required"`
-	Content    string `form:"content" binding:"Required"`
+	Content    string `form:"content"`
 	Draft      string `form:"draft"`
 	Prerelease bool   `form:"prerelease"`
 }

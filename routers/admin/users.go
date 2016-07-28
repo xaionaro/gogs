@@ -8,15 +8,14 @@ import (
 	"strings"
 
 	"github.com/Unknwon/com"
-	"github.com/Unknwon/paginater"
 
 	"github.com/gogits/gogs/models"
 	"github.com/gogits/gogs/modules/auth"
 	"github.com/gogits/gogs/modules/base"
+	"github.com/gogits/gogs/modules/context"
 	"github.com/gogits/gogs/modules/log"
-	"github.com/gogits/gogs/modules/mailer"
-	"github.com/gogits/gogs/modules/middleware"
 	"github.com/gogits/gogs/modules/setting"
+	"github.com/gogits/gogs/routers"
 )
 
 const (
@@ -25,30 +24,22 @@ const (
 	USER_EDIT base.TplName = "admin/user/edit"
 )
 
-func Users(ctx *middleware.Context) {
+func Users(ctx *context.Context) {
 	ctx.Data["Title"] = ctx.Tr("admin.users")
 	ctx.Data["PageIsAdmin"] = true
 	ctx.Data["PageIsAdminUsers"] = true
 
-	total := models.CountUsers()
-	page := ctx.QueryInt("page")
-	if page <= 1 {
-		page = 1
-	}
-	ctx.Data["Page"] = paginater.New(int(total), setting.AdminUserPagingNum, page, 5)
-
-	users, err := models.Users(page, setting.AdminUserPagingNum)
-	if err != nil {
-		ctx.Handle(500, "Users", err)
-		return
-	}
-	ctx.Data["Users"] = users
-
-	ctx.Data["Total"] = total
-	ctx.HTML(200, USERS)
+	routers.RenderUserSearch(ctx, &routers.UserSearchOptions{
+		Type:     models.USER_TYPE_INDIVIDUAL,
+		Counter:  models.CountUsers,
+		Ranger:   models.Users,
+		PageSize: setting.UI.Admin.UserPagingNum,
+		OrderBy:  "id ASC",
+		TplName:  USERS,
+	})
 }
 
-func NewUser(ctx *middleware.Context) {
+func NewUser(ctx *context.Context) {
 	ctx.Data["Title"] = ctx.Tr("admin.users.new_account")
 	ctx.Data["PageIsAdmin"] = true
 	ctx.Data["PageIsAdminUsers"] = true
@@ -66,7 +57,7 @@ func NewUser(ctx *middleware.Context) {
 	ctx.HTML(200, USER_NEW)
 }
 
-func NewUserPost(ctx *middleware.Context, form auth.AdminCrateUserForm) {
+func NewUserPost(ctx *context.Context, form auth.AdminCrateUserForm) {
 	ctx.Data["Title"] = ctx.Tr("admin.users.new_account")
 	ctx.Data["PageIsAdmin"] = true
 	ctx.Data["PageIsAdminUsers"] = true
@@ -123,16 +114,16 @@ func NewUserPost(ctx *middleware.Context, form auth.AdminCrateUserForm) {
 	}
 	log.Trace("Account created by admin (%s): %s", ctx.User.Name, u.Name)
 
-	// Send e-mail notification.
+	// Send email notification.
 	if form.SendNotify && setting.MailService != nil {
-		mailer.SendRegisterNotifyMail(ctx.Context, u)
+		models.SendRegisterNotifyMail(ctx.Context, u)
 	}
 
 	ctx.Flash.Success(ctx.Tr("admin.users.new_success", u.Name))
-	ctx.Redirect(setting.AppSubUrl + "/admin/users/" + com.ToStr(u.Id))
+	ctx.Redirect(setting.AppSubUrl + "/admin/users/" + com.ToStr(u.ID))
 }
 
-func prepareUserInfo(ctx *middleware.Context) *models.User {
+func prepareUserInfo(ctx *context.Context) *models.User {
 	u, err := models.GetUserByID(ctx.ParamsInt64(":userid"))
 	if err != nil {
 		ctx.Handle(500, "GetUserByID", err)
@@ -160,7 +151,7 @@ func prepareUserInfo(ctx *middleware.Context) *models.User {
 	return u
 }
 
-func EditUser(ctx *middleware.Context) {
+func EditUser(ctx *context.Context) {
 	ctx.Data["Title"] = ctx.Tr("admin.users.edit_account")
 	ctx.Data["PageIsAdmin"] = true
 	ctx.Data["PageIsAdminUsers"] = true
@@ -173,7 +164,7 @@ func EditUser(ctx *middleware.Context) {
 	ctx.HTML(200, USER_EDIT)
 }
 
-func EditUserPost(ctx *middleware.Context, form auth.AdminEditUserForm) {
+func EditUserPost(ctx *context.Context, form auth.AdminEditUserForm) {
 	ctx.Data["Title"] = ctx.Tr("admin.users.edit_account")
 	ctx.Data["PageIsAdmin"] = true
 	ctx.Data["PageIsAdminUsers"] = true
@@ -215,6 +206,7 @@ func EditUserPost(ctx *middleware.Context, form auth.AdminEditUserForm) {
 	u.IsAdmin = form.Admin
 	u.AllowGitHook = form.AllowGitHook
 	u.AllowImportLocal = form.AllowImportLocal
+	u.ProhibitLogin = form.ProhibitLogin
 
 	if err := models.UpdateUser(u); err != nil {
 		if models.IsErrEmailAlreadyUsed(err) {
@@ -231,7 +223,7 @@ func EditUserPost(ctx *middleware.Context, form auth.AdminEditUserForm) {
 	ctx.Redirect(setting.AppSubUrl + "/admin/users/" + ctx.Params(":userid"))
 }
 
-func DeleteUser(ctx *middleware.Context) {
+func DeleteUser(ctx *context.Context) {
 	u, err := models.GetUserByID(ctx.ParamsInt64(":userid"))
 	if err != nil {
 		ctx.Handle(500, "GetUserByID", err)

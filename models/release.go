@@ -12,7 +12,7 @@ import (
 
 	"github.com/go-xorm/xorm"
 
-	"github.com/gogits/git-shell"
+	"github.com/gogits/git-module"
 
 	"github.com/gogits/gogs/modules/process"
 )
@@ -33,13 +33,19 @@ type Release struct {
 	Note             string `xorm:"TEXT"`
 	IsDraft          bool   `xorm:"NOT NULL DEFAULT false"`
 	IsPrerelease     bool
-	Created          time.Time `xorm:"CREATED"`
+
+	Created     time.Time `xorm:"-"`
+	CreatedUnix int64
+}
+
+func (r *Release) BeforeInsert() {
+	r.CreatedUnix = time.Now().Unix()
 }
 
 func (r *Release) AfterSet(colName string, _ xorm.Cell) {
 	switch colName {
-	case "created":
-		r.Created = regulateTimeZone(r.Created)
+	case "created_unix":
+		r.Created = time.Unix(r.CreatedUnix, 0).Local()
 	}
 }
 
@@ -61,7 +67,12 @@ func createTag(gitRepo *git.Repository, rel *Release) error {
 				return fmt.Errorf("GetBranchCommit: %v", err)
 			}
 
+			// Trim '--' prefix to prevent command line argument vulnerability.
+			rel.TagName = strings.TrimPrefix(rel.TagName, "--")
 			if err = gitRepo.CreateTag(rel.TagName, commit.ID.String()); err != nil {
+				if strings.Contains(err.Error(), "is not a valid tag name") {
+					return ErrInvalidTagName{rel.TagName}
+				}
 				return err
 			}
 		} else {
@@ -70,6 +81,7 @@ func createTag(gitRepo *git.Repository, rel *Release) error {
 				return fmt.Errorf("GetTagCommit: %v", err)
 			}
 
+			rel.Sha1 = commit.ID.String()
 			rel.NumCommits, err = commit.CommitsCount()
 			if err != nil {
 				return fmt.Errorf("CommitsCount: %v", err)
@@ -125,7 +137,7 @@ func GetReleaseByID(id int64) (*Release, error) {
 
 // GetReleasesByRepoID returns a list of releases of repository.
 func GetReleasesByRepoID(repoID int64) (rels []*Release, err error) {
-	err = x.Desc("created").Find(&rels, Release{RepoID: repoID})
+	err = x.Desc("created_unix").Find(&rels, Release{RepoID: repoID})
 	return rels, err
 }
 

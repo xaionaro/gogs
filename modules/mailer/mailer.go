@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jaytaylor/html2text"
 	"gopkg.in/gomail.v2"
 
 	"github.com/gogits/gogs/modules/log"
@@ -26,14 +27,25 @@ type Message struct {
 }
 
 // NewMessageFrom creates new mail message object with custom From header.
-func NewMessageFrom(to []string, from, subject, body string) *Message {
+func NewMessageFrom(to []string, from, subject, htmlBody string) *Message {
+	log.Trace("NewMessageFrom (htmlBody):\n%s", htmlBody)
+
 	msg := gomail.NewMessage()
 	msg.SetHeader("From", from)
 	msg.SetHeader("To", to...)
 	msg.SetHeader("Subject", subject)
 	msg.SetDateHeader("Date", time.Now())
-	msg.SetBody("text/plain", body)
-	msg.AddAlternative("text/html", body)
+
+	body, err := html2text.FromString(htmlBody)
+	if err != nil {
+		log.Error(4, "html2text.FromString: %v", err)
+		msg.SetBody("text/html", htmlBody)
+	} else {
+		msg.SetBody("text/plain", body)
+		if setting.MailService.EnableHTMLAlternative {
+			msg.AddAlternative("text/html", htmlBody)
+		}
+	}
 
 	return &Message{
 		Message: msg,
@@ -111,7 +123,7 @@ func (s *Sender) Send(from string, to []string, msg io.WriterTo) error {
 
 	client, err := smtp.NewClient(conn, host)
 	if err != nil {
-		return err
+		return fmt.Errorf("NewClient: %v", err)
 	}
 
 	if !setting.MailService.DisableHelo {
@@ -124,7 +136,7 @@ func (s *Sender) Send(from string, to []string, msg io.WriterTo) error {
 		}
 
 		if err = client.Hello(hostname); err != nil {
-			return err
+			return fmt.Errorf("Hello: %v", err)
 		}
 	}
 
@@ -132,7 +144,7 @@ func (s *Sender) Send(from string, to []string, msg io.WriterTo) error {
 	hasStartTLS, _ := client.Extension("STARTTLS")
 	if !isSecureConn && hasStartTLS {
 		if err = client.StartTLS(tlsconfig); err != nil {
-			return err
+			return fmt.Errorf("StartTLS: %v", err)
 		}
 	}
 
@@ -151,28 +163,28 @@ func (s *Sender) Send(from string, to []string, msg io.WriterTo) error {
 
 		if auth != nil {
 			if err = client.Auth(auth); err != nil {
-				return err
+				return fmt.Errorf("Auth: %v", err)
 			}
 		}
 	}
 
 	if err = client.Mail(from); err != nil {
-		return err
+		return fmt.Errorf("Mail: %v", err)
 	}
 
 	for _, rec := range to {
 		if err = client.Rcpt(rec); err != nil {
-			return err
+			return fmt.Errorf("Rcpt: %v", err)
 		}
 	}
 
 	w, err := client.Data()
 	if err != nil {
-		return err
+		return fmt.Errorf("Data: %v", err)
 	} else if _, err = msg.WriteTo(w); err != nil {
-		return err
+		return fmt.Errorf("WriteTo: %v", err)
 	} else if err = w.Close(); err != nil {
-		return err
+		return fmt.Errorf("Close: %v", err)
 	}
 
 	return client.Quit()
@@ -186,7 +198,7 @@ func processMailQueue() {
 		case msg := <-mailQueue:
 			log.Trace("New e-mail sending request %s: %s", msg.GetHeader("To"), msg.Info)
 			if err := gomail.Send(sender, msg.Message); err != nil {
-				log.Error(4, "Fail to send e-mails %s: %s - %v", msg.GetHeader("To"), msg.Info, err)
+				log.Error(3, "Fail to send emails %s: %s - %v", msg.GetHeader("To"), msg.Info, err)
 			} else {
 				log.Trace("E-mails sent %s: %s", msg.GetHeader("To"), msg.Info)
 			}
@@ -197,7 +209,10 @@ func processMailQueue() {
 var mailQueue chan *Message
 
 func NewContext() {
-	if setting.MailService == nil {
+	// Need to check if mailQueue is nil because in during reinstall (user had installed
+	// before but swithed install lock off), this function will be called again
+	// while mail queue is already processing tasks, and produces a race condition.
+	if setting.MailService == nil || mailQueue != nil {
 		return
 	}
 

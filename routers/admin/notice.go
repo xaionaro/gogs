@@ -10,8 +10,8 @@ import (
 
 	"github.com/gogits/gogs/models"
 	"github.com/gogits/gogs/modules/base"
+	"github.com/gogits/gogs/modules/context"
 	"github.com/gogits/gogs/modules/log"
-	"github.com/gogits/gogs/modules/middleware"
 	"github.com/gogits/gogs/modules/setting"
 )
 
@@ -19,7 +19,7 @@ const (
 	NOTICES base.TplName = "admin/notice"
 )
 
-func Notices(ctx *middleware.Context) {
+func Notices(ctx *context.Context) {
 	ctx.Data["Title"] = ctx.Tr("admin.notices")
 	ctx.Data["PageIsAdmin"] = true
 	ctx.Data["PageIsAdminNotices"] = true
@@ -29,9 +29,9 @@ func Notices(ctx *middleware.Context) {
 	if page <= 1 {
 		page = 1
 	}
-	ctx.Data["Page"] = paginater.New(int(total), setting.AdminNoticePagingNum, page, 5)
+	ctx.Data["Page"] = paginater.New(int(total), setting.UI.Admin.NoticePagingNum, page, 5)
 
-	notices, err := models.Notices(page, setting.AdminNoticePagingNum)
+	notices, err := models.Notices(page, setting.UI.Admin.NoticePagingNum)
 	if err != nil {
 		ctx.Handle(500, "Notices", err)
 		return
@@ -42,7 +42,7 @@ func Notices(ctx *middleware.Context) {
 	ctx.HTML(200, NOTICES)
 }
 
-func DeleteNotices(ctx *middleware.Context) {
+func DeleteNotices(ctx *context.Context) {
 	strs := ctx.QueryStrings("ids[]")
 	ids := make([]int64, 0, len(strs))
 	for i := range strs {
@@ -61,7 +61,7 @@ func DeleteNotices(ctx *middleware.Context) {
 	}
 }
 
-func EmptyNotices(ctx *middleware.Context) {
+func EmptyNotices(ctx *context.Context) {
 	if err := models.DeleteNotices(0, 0); err != nil {
 		ctx.Handle(500, "DeleteNotices", err)
 		return

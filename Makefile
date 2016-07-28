@@ -6,6 +6,7 @@ LESS_FILES := $(wildcard public/less/gogs.less public/less/_*.less)
 GENERATED  := modules/bindata/bindata.go public/css/gogs.css
 
 TAGS = ""
+BUILD_FLAGS = "-v"
 
 RELEASE_ROOT = "release"
 RELEASE_GOGS = "release/gogs"
@@ -16,11 +17,19 @@ NOW = $(shell date -u '+%Y%m%d%I%M%S')
 .IGNORE: public/css/gogs.css
 
 build: $(GENERATED)
-	go install -ldflags '$(LDFLAGS)' -tags '$(TAGS)'
+	go install $(BUILD_FLAGS) -ldflags '$(LDFLAGS)' -tags '$(TAGS)'
 	cp '$(GOPATH)/bin/gogs' .
 
 govet:
 	go tool vet -composites=false -methods=false -structtags=false .
+
+build-dev: $(GENERATED) govet
+	go install $(BUILD_FLAGS) -tags '$(TAGS)'
+	cp '$(GOPATH)/bin/gogs' .
+
+build-dev-race: $(GENERATED) govet
+	go install $(BUILD_FLAGS) -race -tags '$(TAGS)'
+	cp '$(GOPATH)/bin/gogs' .
 
 pack:
 	rm -rf $(RELEASE_GOGS)
@@ -34,7 +43,7 @@ release: build pack
 bindata: modules/bindata/bindata.go
 
 modules/bindata/bindata.go: $(DATA_FILES)
-	go-bindata -o=$@ -ignore="\\.DS_Store|README.md" -pkg=bindata conf/...
+	go-bindata -o=$@ -ignore="\\.DS_Store|README.md|TRANSLATORS" -pkg=bindata conf/...
 
 less: public/css/gogs.css
 
@@ -46,3 +55,12 @@ clean:
 
 clean-mac: clean
 	find . -name ".DS_Store" -print0 | xargs -0 rm
+
+test:
+	go test -cover -race ./...
+
+fixme:
+	grep -rnw "FIXME" routers models modules
+
+todo:
+	grep -rnw "TODO" routers models modules

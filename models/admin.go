@@ -5,12 +5,18 @@
 package models
 
 import (
+	"fmt"
+	"os"
+	"os/exec"
 	"strings"
 	"time"
 
 	"github.com/Unknwon/com"
+	"github.com/go-xorm/xorm"
 
 	"github.com/gogits/gogs/modules/base"
+	"github.com/gogits/gogs/modules/log"
+	"github.com/gogits/gogs/modules/setting"
 )
 
 type NoticeType int
@@ -24,7 +30,19 @@ type Notice struct {
 	ID          int64 `xorm:"pk autoincr"`
 	Type        NoticeType
 	Description string    `xorm:"TEXT"`
-	Created     time.Time `xorm:"CREATED"`
+	Created     time.Time `xorm:"-"`
+	CreatedUnix int64
+}
+
+func (n *Notice) BeforeInsert() {
+	n.CreatedUnix = time.Now().Unix()
+}
+
+func (n *Notice) AfterSet(colName string, _ xorm.Cell) {
+	switch colName {
+	case "created_unix":
+		n.Created = time.Unix(n.CreatedUnix, 0).Local()
+	}
 }
 
 // TrStr returns a translation format string.
@@ -34,6 +52,11 @@ func (n *Notice) TrStr() string {
 
 // CreateNotice creates new system notice.
 func CreateNotice(tp NoticeType, desc string) error {
+	// prevent panic if database connection is not available at this point
+	if x == nil {
+		return fmt.Errorf("Could not save notice due database connection not being available: %d %s", tp, desc)
+	}
+
 	n := &Notice{
 		Type:        tp,
 		Description: desc,
@@ -45,6 +68,30 @@ func CreateNotice(tp NoticeType, desc string) error {
 // CreateRepositoryNotice creates new system notice with type NOTICE_REPOSITORY.
 func CreateRepositoryNotice(desc string) error {
 	return CreateNotice(NOTICE_REPOSITORY, desc)
+}
+
+// RemoveAllWithNotice removes all directories in given path and
+// creates a system notice when error occurs.
+func RemoveAllWithNotice(title, path string) {
+	var err error
+	// workaround for Go not being able to remove read-only files/folders: https://github.com/golang/go/issues/9606
+	// this bug should be fixed on Go 1.7, so the workaround should be removed when Gogs don't support Go 1.6 anymore:
+	// https://github.com/golang/go/commit/2ffb3e5d905b5622204d199128dec06cefd57790
+	if setting.IsWindows {
+		// converting "/" to "\" in path on Windows
+		path = strings.Replace(path, "/", "\\", -1)
+		err = exec.Command("cmd", "/C", "rmdir", "/S", "/Q", path).Run()
+	} else {
+		err = os.RemoveAll(path)
+	}
+
+	if err != nil {
+		desc := fmt.Sprintf("%s [%s]: %v", title, path, err)
+		log.Warn(desc)
+		if err = CreateRepositoryNotice(desc); err != nil {
+			log.Error(4, "CreateRepositoryNotice: %v", err)
+		}
+	}
 }
 
 // CountNotices returns number of notices.

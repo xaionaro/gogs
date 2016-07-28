@@ -11,16 +11,13 @@ import (
 	"os"
 	"path"
 	"strings"
-	"time"
 
-	"github.com/Unknwon/com"
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/go-xorm/core"
 	"github.com/go-xorm/xorm"
 	_ "github.com/lib/pq"
 
 	"github.com/gogits/gogs/models/migrations"
-	"github.com/gogits/gogs/modules/log"
 	"github.com/gogits/gogs/modules/setting"
 )
 
@@ -30,9 +27,10 @@ type Engine interface {
 	Exec(string, ...interface{}) (sql.Result, error)
 	Find(interface{}, ...interface{}) error
 	Get(interface{}) (bool, error)
+	Id(interface{}) *xorm.Session
 	Insert(...interface{}) (int64, error)
 	InsertOne(interface{}) (int64, error)
-	Id(interface{}) *xorm.Session
+	Iterate(interface{}, xorm.IterFunc) error
 	Sql(string, ...interface{}) *xorm.Session
 	Where(string, ...interface{}) *xorm.Session
 }
@@ -42,27 +40,6 @@ func sessionRelease(sess *xorm.Session) {
 		sess.Rollback()
 	}
 	sess.Close()
-}
-
-// Note: get back time.Time from database Go sees it at UTC where they are really Local.
-// 	So this function makes correct timezone offset.
-func regulateTimeZone(t time.Time) time.Time {
-	if !setting.UseMySQL {
-		return t
-	}
-
-	zone := t.Local().Format("-0700")
-	if len(zone) != 5 {
-		log.Error(4, "Unprocessable timezone: %s - %s", t.Local(), zone)
-		return t
-	}
-	hour := com.StrTo(zone[2:3]).MustInt()
-	minutes := com.StrTo(zone[3:5]).MustInt()
-
-	if zone[0] == '-' {
-		return t.Add(time.Duration(hour) * time.Hour).Add(time.Duration(minutes) * time.Minute)
-	}
-	return t.Add(-1 * time.Duration(hour) * time.Hour).Add(-1 * time.Duration(minutes) * time.Minute)
 }
 
 var (
@@ -121,14 +98,18 @@ func LoadConfigs() {
 
 func getEngine() (*xorm.Engine, error) {
 	cnnstr := ""
+	var Param string = "?"
+	if strings.Contains(DbCfg.Name, Param) {
+		Param = "&"
+	}
 	switch DbCfg.Type {
 	case "mysql":
 		if DbCfg.Host[0] == '/' { // looks like a unix socket
-			cnnstr = fmt.Sprintf("%s:%s@unix(%s)/%s?charset=utf8&parseTime=true",
-				DbCfg.User, DbCfg.Passwd, DbCfg.Host, DbCfg.Name)
+			cnnstr = fmt.Sprintf("%s:%s@unix(%s)/%s%scharset=utf8&parseTime=true",
+				DbCfg.User, DbCfg.Passwd, DbCfg.Host, DbCfg.Name, Param)
 		} else {
-			cnnstr = fmt.Sprintf("%s:%s@tcp(%s)/%s?charset=utf8&parseTime=true",
-				DbCfg.User, DbCfg.Passwd, DbCfg.Host, DbCfg.Name)
+			cnnstr = fmt.Sprintf("%s:%s@tcp(%s)/%s%scharset=utf8&parseTime=true",
+				DbCfg.User, DbCfg.Passwd, DbCfg.Host, DbCfg.Name, Param)
 		}
 	case "postgres":
 		var host, port = "127.0.0.1", "5432"
@@ -139,8 +120,8 @@ func getEngine() (*xorm.Engine, error) {
 		if len(fields) > 1 && len(strings.TrimSpace(fields[1])) > 0 {
 			port = fields[1]
 		}
-		cnnstr = fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=%s",
-			url.QueryEscape(DbCfg.User), url.QueryEscape(DbCfg.Passwd), host, port, DbCfg.Name, DbCfg.SSLMode)
+		cnnstr = fmt.Sprintf("postgres://%s:%s@%s:%s/%s%ssslmode=%s",
+			url.QueryEscape(DbCfg.User), url.QueryEscape(DbCfg.Passwd), host, port, DbCfg.Name, Param, DbCfg.SSLMode)
 	case "sqlite3":
 		if !EnableSQLite3 {
 			return nil, fmt.Errorf("Unknown database type: %s", DbCfg.Type)
@@ -191,12 +172,7 @@ func SetEngine() (err error) {
 		return fmt.Errorf("Fail to create xorm.log: %v", err)
 	}
 	x.SetLogger(xorm.NewSimpleLogger(f))
-
-	x.ShowSQL = true
-	x.ShowInfo = true
-	x.ShowDebug = true
-	x.ShowErr = true
-	x.ShowWarn = true
+	x.ShowSQL(true)
 	return nil
 }
 
@@ -231,7 +207,7 @@ func GetStatistic() (stats Statistic) {
 	stats.Counter.User = CountUsers()
 	stats.Counter.Org = CountOrganizations()
 	stats.Counter.PublicKey, _ = x.Count(new(PublicKey))
-	stats.Counter.Repo = CountRepositories()
+	stats.Counter.Repo = CountRepositories(true)
 	stats.Counter.Watch, _ = x.Count(new(Watch))
 	stats.Counter.Star, _ = x.Count(new(Star))
 	stats.Counter.Action, _ = x.Count(new(Action))

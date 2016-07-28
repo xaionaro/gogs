@@ -8,32 +8,40 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
+	"html"
+	"html/template"
 	"io"
+	"io/ioutil"
 	"os"
 	"os/exec"
 	"strings"
 
 	"github.com/Unknwon/com"
+	"github.com/sergi/go-diff/diffmatchpatch"
 	"golang.org/x/net/html/charset"
 	"golang.org/x/text/transform"
 
-	"github.com/gogits/git-shell"
+	"github.com/gogits/git-module"
 
 	"github.com/gogits/gogs/modules/base"
 	"github.com/gogits/gogs/modules/log"
 	"github.com/gogits/gogs/modules/process"
+	"github.com/gogits/gogs/modules/template/highlight"
 )
 
-// Diff line types.
+type DiffLineType uint8
+
 const (
-	DIFF_LINE_PLAIN = iota + 1
+	DIFF_LINE_PLAIN DiffLineType = iota + 1
 	DIFF_LINE_ADD
 	DIFF_LINE_DEL
 	DIFF_LINE_SECTION
 )
 
+type DiffFileType uint8
+
 const (
-	DIFF_FILE_ADD = iota + 1
+	DIFF_FILE_ADD DiffFileType = iota + 1
 	DIFF_FILE_CHANGE
 	DIFF_FILE_DEL
 	DIFF_FILE_RENAME
@@ -42,12 +50,12 @@ const (
 type DiffLine struct {
 	LeftIdx  int
 	RightIdx int
-	Type     int
+	Type     DiffLineType
 	Content  string
 }
 
-func (d DiffLine) GetType() int {
-	return d.Type
+func (d *DiffLine) GetType() int {
+	return int(d.Type)
 }
 
 type DiffSection struct {
@@ -55,22 +63,120 @@ type DiffSection struct {
 	Lines []*DiffLine
 }
 
+var (
+	addedCodePrefix   = []byte("<span class=\"added-code\">")
+	removedCodePrefix = []byte("<span class=\"removed-code\">")
+	codeTagSuffix     = []byte("</span>")
+)
+
+func diffToHTML(diffs []diffmatchpatch.Diff, lineType DiffLineType) template.HTML {
+	var buf bytes.Buffer
+	for i := range diffs {
+		if diffs[i].Type == diffmatchpatch.DiffInsert && lineType == DIFF_LINE_ADD {
+			buf.Write(addedCodePrefix)
+			buf.WriteString(html.EscapeString(diffs[i].Text))
+			buf.Write(codeTagSuffix)
+		} else if diffs[i].Type == diffmatchpatch.DiffDelete && lineType == DIFF_LINE_DEL {
+			buf.Write(removedCodePrefix)
+			buf.WriteString(html.EscapeString(diffs[i].Text))
+			buf.Write(codeTagSuffix)
+		} else if diffs[i].Type == diffmatchpatch.DiffEqual {
+			buf.WriteString(html.EscapeString(diffs[i].Text))
+		}
+	}
+
+	return template.HTML(buf.Bytes())
+}
+
+// get an specific line by type (add or del) and file line number
+func (diffSection *DiffSection) GetLine(lineType DiffLineType, idx int) *DiffLine {
+	difference := 0
+
+	for _, diffLine := range diffSection.Lines {
+		if diffLine.Type == DIFF_LINE_PLAIN {
+			// get the difference of line numbers between ADD and DEL versions
+			difference = diffLine.RightIdx - diffLine.LeftIdx
+			continue
+		}
+
+		if lineType == DIFF_LINE_DEL {
+			if diffLine.RightIdx == 0 && diffLine.LeftIdx == idx-difference {
+				return diffLine
+			}
+		} else if lineType == DIFF_LINE_ADD {
+			if diffLine.LeftIdx == 0 && diffLine.RightIdx == idx+difference {
+				return diffLine
+			}
+		}
+	}
+	return nil
+}
+
+// computes inline diff for the given line
+func (diffSection *DiffSection) GetComputedInlineDiffFor(diffLine *DiffLine) template.HTML {
+	var compareDiffLine *DiffLine
+	var diff1, diff2 string
+
+	getDefaultReturn := func() template.HTML {
+		return template.HTML(html.EscapeString(diffLine.Content[1:]))
+	}
+
+	// just compute diff for adds and removes
+	if diffLine.Type != DIFF_LINE_ADD && diffLine.Type != DIFF_LINE_DEL {
+		return getDefaultReturn()
+	}
+
+	// try to find equivalent diff line. ignore, otherwise
+	if diffLine.Type == DIFF_LINE_ADD {
+		compareDiffLine = diffSection.GetLine(DIFF_LINE_DEL, diffLine.RightIdx)
+		if compareDiffLine == nil {
+			return getDefaultReturn()
+		}
+		diff1 = compareDiffLine.Content
+		diff2 = diffLine.Content
+	} else {
+		compareDiffLine = diffSection.GetLine(DIFF_LINE_ADD, diffLine.LeftIdx)
+		if compareDiffLine == nil {
+			return getDefaultReturn()
+		}
+		diff1 = diffLine.Content
+		diff2 = compareDiffLine.Content
+	}
+
+	dmp := diffmatchpatch.New()
+	diffRecord := dmp.DiffMain(diff1[1:], diff2[1:], true)
+	diffRecord = dmp.DiffCleanupSemantic(diffRecord)
+
+	return diffToHTML(diffRecord, diffLine.Type)
+}
+
 type DiffFile struct {
 	Name               string
 	OldName            string
 	Index              int
 	Addition, Deletion int
-	Type               int
+	Type               DiffFileType
 	IsCreated          bool
 	IsDeleted          bool
 	IsBin              bool
 	IsRenamed          bool
+	IsSubmodule        bool
 	Sections           []*DiffSection
+	IsIncomplete       bool
+}
+
+func (diffFile *DiffFile) GetType() int {
+	return int(diffFile.Type)
+}
+
+func (diffFile *DiffFile) GetHighlightClass() string {
+	return highlight.FileNameToHighlightClass(diffFile.Name)
 }
 
 type Diff struct {
 	TotalAddition, TotalDeletion int
 	Files                        []*DiffFile
+	IsIncomplete                 bool
 }
 
 func (diff *Diff) NumFiles() int {
@@ -79,7 +185,7 @@ func (diff *Diff) NumFiles() int {
 
 const DIFF_HEAD = "diff --git "
 
-func ParsePatch(maxlines int, reader io.Reader) (*Diff, error) {
+func ParsePatch(maxLines, maxLineCharacteres, maxFiles int, reader io.Reader) (*Diff, error) {
 	var (
 		diff = &Diff{Files: make([]*DiffFile, 0)}
 
@@ -90,15 +196,12 @@ func ParsePatch(maxlines int, reader io.Reader) (*Diff, error) {
 
 		leftLine, rightLine int
 		lineCount           int
+		curFileLinesCount   int
 	)
 
 	input := bufio.NewReader(reader)
 	isEOF := false
-	for {
-		if isEOF {
-			break
-		}
-
+	for !isEOF {
 		line, err := input.ReadString('\n')
 		if err != nil {
 			if err == io.EOF {
@@ -113,19 +216,16 @@ func ParsePatch(maxlines int, reader io.Reader) (*Diff, error) {
 			line = line[:len(line)-1]
 		}
 
-		if strings.HasPrefix(line, "+++ ") || strings.HasPrefix(line, "--- ") {
-			continue
-		} else if len(line) == 0 {
+		if strings.HasPrefix(line, "+++ ") || strings.HasPrefix(line, "--- ") || len(line) == 0 {
 			continue
 		}
 
+		curFileLinesCount++
 		lineCount++
 
 		// Diff data too large, we only show the first about maxlines lines
-		if lineCount >= maxlines {
-			log.Warn("Diff data too large")
-			diff.Files = nil
-			return diff, nil
+		if curFileLinesCount >= maxLines || len(line) >= maxLineCharacteres {
+			curFile.IsIncomplete = true
 		}
 
 		switch {
@@ -200,8 +300,14 @@ func ParsePatch(maxlines int, reader io.Reader) (*Diff, error) {
 				Sections: make([]*DiffSection, 0, 10),
 			}
 			diff.Files = append(diff.Files, curFile)
+			if len(diff.Files) >= maxFiles {
+				diff.IsIncomplete = true
+				io.Copy(ioutil.Discard, reader)
+				break
+			}
+			curFileLinesCount = 0
 
-			// Check file diff type.
+			// Check file diff type and is submodule.
 			for {
 				line, err := input.ReadString('\n')
 				if err != nil {
@@ -228,6 +334,9 @@ func ParsePatch(maxlines int, reader io.Reader) (*Diff, error) {
 					curFile.Name = b
 				}
 				if curFile.Type > 0 {
+					if strings.HasSuffix(line, " 160000\n") {
+						curFile.IsSubmodule = true
+					}
 					break
 				}
 			}
@@ -262,7 +371,7 @@ func ParsePatch(maxlines int, reader io.Reader) (*Diff, error) {
 	return diff, nil
 }
 
-func GetDiffRange(repoPath, beforeCommitID string, afterCommitID string, maxlines int) (*Diff, error) {
+func GetDiffRange(repoPath, beforeCommitID string, afterCommitID string, maxLines, maxLineCharacteres, maxFiles int) (*Diff, error) {
 	repo, err := git.OpenRepository(repoPath)
 	if err != nil {
 		return nil, err
@@ -301,7 +410,7 @@ func GetDiffRange(repoPath, beforeCommitID string, afterCommitID string, maxline
 	pid := process.Add(fmt.Sprintf("GetDiffRange (%s)", repoPath), cmd)
 	defer process.Remove(pid)
 
-	diff, err := ParsePatch(maxlines, stdout)
+	diff, err := ParsePatch(maxLines, maxLineCharacteres, maxFiles, stdout)
 	if err != nil {
 		return nil, fmt.Errorf("ParsePatch: %v", err)
 	}
@@ -313,6 +422,6 @@ func GetDiffRange(repoPath, beforeCommitID string, afterCommitID string, maxline
 	return diff, nil
 }
 
-func GetDiffCommit(repoPath, commitId string, maxlines int) (*Diff, error) {
-	return GetDiffRange(repoPath, "", commitId, maxlines)
+func GetDiffCommit(repoPath, commitId string, maxLines, maxLineCharacteres, maxFiles int) (*Diff, error) {
+	return GetDiffRange(repoPath, "", commitId, maxLines, maxLineCharacteres, maxFiles)
 }

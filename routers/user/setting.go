@@ -15,9 +15,8 @@ import (
 	"github.com/gogits/gogs/models"
 	"github.com/gogits/gogs/modules/auth"
 	"github.com/gogits/gogs/modules/base"
+	"github.com/gogits/gogs/modules/context"
 	"github.com/gogits/gogs/modules/log"
-	"github.com/gogits/gogs/modules/mailer"
-	"github.com/gogits/gogs/modules/middleware"
 	"github.com/gogits/gogs/modules/setting"
 )
 
@@ -33,18 +32,19 @@ const (
 	SECURITY              base.TplName = "user/security"
 )
 
-func Settings(ctx *middleware.Context) {
+func Settings(ctx *context.Context) {
 	ctx.Data["Title"] = ctx.Tr("settings")
 	ctx.Data["PageIsSettingsProfile"] = true
 	ctx.HTML(200, SETTINGS_PROFILE)
 }
 
-func handlerUsernameChange(ctx *middleware.Context, newName string) {
+func handleUsernameChange(ctx *context.Context, newName string) {
+	// Non-local users are not allowed to change their username.
 	if len(newName) == 0 || !ctx.User.IsLocal() {
 		return
 	}
 
-	// Check if user name has been changed.
+	// Check if user name has been changed
 	if ctx.User.LowerName != strings.ToLower(newName) {
 		if err := models.ChangeUserName(ctx.User, newName); err != nil {
 			switch {
@@ -67,12 +67,13 @@ func handlerUsernameChange(ctx *middleware.Context, newName string) {
 		}
 		log.Trace("User name changed: %s -> %s", ctx.User.Name, newName)
 	}
-	// In case it's just a case change.
+
+	// In case it's just a case change
 	ctx.User.Name = newName
 	ctx.User.LowerName = strings.ToLower(newName)
 }
 
-func SettingsPost(ctx *middleware.Context, form auth.UpdateProfileForm) {
+func SettingsPost(ctx *context.Context, form auth.UpdateProfileForm) {
 	ctx.Data["Title"] = ctx.Tr("settings")
 	ctx.Data["PageIsSettingsProfile"] = true
 
@@ -81,7 +82,7 @@ func SettingsPost(ctx *middleware.Context, form auth.UpdateProfileForm) {
 		return
 	}
 
-	handlerUsernameChange(ctx, form.Name)
+	handleUsernameChange(ctx, form.Name)
 	if ctx.Written() {
 		return
 	}
@@ -98,13 +99,14 @@ func SettingsPost(ctx *middleware.Context, form auth.UpdateProfileForm) {
 		ctx.Handle(500, "UpdateUser", err)
 		return
 	}
-	log.Trace("User setting updated: %s", ctx.User.Name)
+
+	log.Trace("User settings updated: %s", ctx.User.Name)
 	ctx.Flash.Success(ctx.Tr("settings.update_profile_success"))
 	ctx.Redirect(setting.AppSubUrl + "/user/settings")
 }
 
 // FIXME: limit size.
-func UpdateAvatarSetting(ctx *middleware.Context, form auth.UploadAvatarForm, ctxUser *models.User) error {
+func UpdateAvatarSetting(ctx *context.Context, form auth.UploadAvatarForm, ctxUser *models.User) error {
 	ctxUser.UseCustomAvatar = form.Enable
 
 	if form.Avatar != nil {
@@ -112,10 +114,11 @@ func UpdateAvatarSetting(ctx *middleware.Context, form auth.UploadAvatarForm, ct
 		if err != nil {
 			return fmt.Errorf("Avatar.Open: %v", err)
 		}
+		defer fr.Close()
 
 		data, err := ioutil.ReadAll(fr)
 		if err != nil {
-			return fmt.Errorf("ReadAll: %v", err)
+			return fmt.Errorf("ioutil.ReadAll: %v", err)
 		}
 		if _, ok := base.IsImageFile(data); !ok {
 			return errors.New(ctx.Tr("settings.uploaded_avatar_not_a_image"))
@@ -124,9 +127,12 @@ func UpdateAvatarSetting(ctx *middleware.Context, form auth.UploadAvatarForm, ct
 			return fmt.Errorf("UploadAvatar: %v", err)
 		}
 	} else {
-		// In case no avatar at all.
-		if form.Enable && !com.IsFile(ctx.User.CustomAvatarPath()) {
-			return errors.New(ctx.Tr("settings.no_custom_avatar_available"))
+		// No avatar is uploaded but setting has been changed to enable,
+		// generate a random one when needed.
+		if form.Enable && !com.IsFile(ctxUser.CustomAvatarPath()) {
+			if err := ctxUser.GenerateRandomAvatar(); err != nil {
+				log.Error(4, "GenerateRandomAvatar[%d]: %v", ctxUser.ID, err)
+			}
 		}
 	}
 
@@ -137,7 +143,7 @@ func UpdateAvatarSetting(ctx *middleware.Context, form auth.UploadAvatarForm, ct
 	return nil
 }
 
-func SettingsAvatar(ctx *middleware.Context, form auth.UploadAvatarForm) {
+func SettingsAvatar(ctx *context.Context, form auth.UploadAvatarForm) {
 	if err := UpdateAvatarSetting(ctx, form, ctx.User); err != nil {
 		ctx.Flash.Error(err.Error())
 	} else {
@@ -147,13 +153,21 @@ func SettingsAvatar(ctx *middleware.Context, form auth.UploadAvatarForm) {
 	ctx.Redirect(setting.AppSubUrl + "/user/settings")
 }
 
-func SettingsPassword(ctx *middleware.Context) {
+func SettingsDeleteAvatar(ctx *context.Context) {
+	if err := ctx.User.DeleteAvatar(); err != nil {
+		ctx.Flash.Error(err.Error())
+	}
+
+	ctx.Redirect(setting.AppSubUrl + "/user/settings")
+}
+
+func SettingsPassword(ctx *context.Context) {
 	ctx.Data["Title"] = ctx.Tr("settings")
 	ctx.Data["PageIsSettingsPassword"] = true
 	ctx.HTML(200, SETTINGS_PASSWORD)
 }
 
-func SettingsPasswordPost(ctx *middleware.Context, form auth.ChangePasswordForm) {
+func SettingsPasswordPost(ctx *context.Context, form auth.ChangePasswordForm) {
 	ctx.Data["Title"] = ctx.Tr("settings")
 	ctx.Data["PageIsSettingsPassword"] = true
 
@@ -181,11 +195,11 @@ func SettingsPasswordPost(ctx *middleware.Context, form auth.ChangePasswordForm)
 	ctx.Redirect(setting.AppSubUrl + "/user/settings/password")
 }
 
-func SettingsEmails(ctx *middleware.Context) {
+func SettingsEmails(ctx *context.Context) {
 	ctx.Data["Title"] = ctx.Tr("settings")
 	ctx.Data["PageIsSettingsEmails"] = true
 
-	emails, err := models.GetEmailAddresses(ctx.User.Id)
+	emails, err := models.GetEmailAddresses(ctx.User.ID)
 	if err != nil {
 		ctx.Handle(500, "GetEmailAddresses", err)
 		return
@@ -195,7 +209,7 @@ func SettingsEmails(ctx *middleware.Context) {
 	ctx.HTML(200, SETTINGS_EMAILS)
 }
 
-func SettingsEmailPost(ctx *middleware.Context, form auth.AddEmailForm) {
+func SettingsEmailPost(ctx *context.Context, form auth.AddEmailForm) {
 	ctx.Data["Title"] = ctx.Tr("settings")
 	ctx.Data["PageIsSettingsEmails"] = true
 
@@ -212,7 +226,7 @@ func SettingsEmailPost(ctx *middleware.Context, form auth.AddEmailForm) {
 	}
 
 	// Add Email address.
-	emails, err := models.GetEmailAddresses(ctx.User.Id)
+	emails, err := models.GetEmailAddresses(ctx.User.ID)
 	if err != nil {
 		ctx.Handle(500, "GetEmailAddresses", err)
 		return
@@ -224,12 +238,12 @@ func SettingsEmailPost(ctx *middleware.Context, form auth.AddEmailForm) {
 		return
 	}
 
-	e := &models.EmailAddress{
-		UID:         ctx.User.Id,
-		Email:       strings.TrimSpace(form.Email),
+	email := &models.EmailAddress{
+		UID:         ctx.User.ID,
+		Email:       form.Email,
 		IsActivated: !setting.Service.RegisterEmailConfirm,
 	}
-	if err := models.AddEmailAddress(e); err != nil {
+	if err := models.AddEmailAddress(email); err != nil {
 		if models.IsErrEmailAlreadyUsed(err) {
 			ctx.RenderWithErr(ctx.Tr("form.email_been_used"), SETTINGS_EMAILS, &form)
 			return
@@ -238,23 +252,23 @@ func SettingsEmailPost(ctx *middleware.Context, form auth.AddEmailForm) {
 		return
 	}
 
-	// Send confirmation e-mail
+	// Send confirmation email
 	if setting.Service.RegisterEmailConfirm {
-		mailer.SendActivateEmailMail(ctx.Context, ctx.User, e)
+		models.SendActivateEmailMail(ctx.Context, ctx.User, email)
 
 		if err := ctx.Cache.Put("MailResendLimit_"+ctx.User.LowerName, ctx.User.LowerName, 180); err != nil {
 			log.Error(4, "Set cache(MailResendLimit) fail: %v", err)
 		}
-		ctx.Flash.Info(ctx.Tr("settings.add_email_confirmation_sent", e.Email, setting.Service.ActiveCodeLives/60))
+		ctx.Flash.Info(ctx.Tr("settings.add_email_confirmation_sent", email.Email, setting.Service.ActiveCodeLives/60))
 	} else {
 		ctx.Flash.Success(ctx.Tr("settings.add_email_success"))
 	}
 
-	log.Trace("Email address added: %s", e.Email)
+	log.Trace("Email address added: %s", email.Email)
 	ctx.Redirect(setting.AppSubUrl + "/user/settings/email")
 }
 
-func DeleteEmail(ctx *middleware.Context) {
+func DeleteEmail(ctx *context.Context) {
 	if err := models.DeleteEmailAddress(&models.EmailAddress{ID: ctx.QueryInt64("id")}); err != nil {
 		ctx.Handle(500, "DeleteEmail", err)
 		return
@@ -267,11 +281,11 @@ func DeleteEmail(ctx *middleware.Context) {
 	})
 }
 
-func SettingsSSHKeys(ctx *middleware.Context) {
+func SettingsSSHKeys(ctx *context.Context) {
 	ctx.Data["Title"] = ctx.Tr("settings")
 	ctx.Data["PageIsSettingsSSHKeys"] = true
 
-	keys, err := models.ListPublicKeys(ctx.User.Id)
+	keys, err := models.ListPublicKeys(ctx.User.ID)
 	if err != nil {
 		ctx.Handle(500, "ListPublicKeys", err)
 		return
@@ -281,11 +295,11 @@ func SettingsSSHKeys(ctx *middleware.Context) {
 	ctx.HTML(200, SETTINGS_SSH_KEYS)
 }
 
-func SettingsSSHKeysPost(ctx *middleware.Context, form auth.AddSSHKeyForm) {
+func SettingsSSHKeysPost(ctx *context.Context, form auth.AddSSHKeyForm) {
 	ctx.Data["Title"] = ctx.Tr("settings")
 	ctx.Data["PageIsSettingsSSHKeys"] = true
 
-	keys, err := models.ListPublicKeys(ctx.User.Id)
+	keys, err := models.ListPublicKeys(ctx.User.ID)
 	if err != nil {
 		ctx.Handle(500, "ListPublicKeys", err)
 		return
@@ -308,7 +322,7 @@ func SettingsSSHKeysPost(ctx *middleware.Context, form auth.AddSSHKeyForm) {
 		}
 	}
 
-	if _, err = models.AddPublicKey(ctx.User.Id, form.Title, content); err != nil {
+	if _, err = models.AddPublicKey(ctx.User.ID, form.Title, content); err != nil {
 		ctx.Data["HasError"] = true
 		switch {
 		case models.IsErrKeyAlreadyExist(err):
@@ -327,7 +341,7 @@ func SettingsSSHKeysPost(ctx *middleware.Context, form auth.AddSSHKeyForm) {
 	ctx.Redirect(setting.AppSubUrl + "/user/settings/ssh")
 }
 
-func DeleteSSHKey(ctx *middleware.Context) {
+func DeleteSSHKey(ctx *context.Context) {
 	if err := models.DeletePublicKey(ctx.User, ctx.QueryInt64("id")); err != nil {
 		ctx.Flash.Error("DeletePublicKey: " + err.Error())
 	} else {
@@ -339,11 +353,11 @@ func DeleteSSHKey(ctx *middleware.Context) {
 	})
 }
 
-func SettingsApplications(ctx *middleware.Context) {
+func SettingsApplications(ctx *context.Context) {
 	ctx.Data["Title"] = ctx.Tr("settings")
 	ctx.Data["PageIsSettingsApplications"] = true
 
-	tokens, err := models.ListAccessTokens(ctx.User.Id)
+	tokens, err := models.ListAccessTokens(ctx.User.ID)
 	if err != nil {
 		ctx.Handle(500, "ListAccessTokens", err)
 		return
@@ -353,12 +367,12 @@ func SettingsApplications(ctx *middleware.Context) {
 	ctx.HTML(200, SETTINGS_APPLICATIONS)
 }
 
-func SettingsApplicationsPost(ctx *middleware.Context, form auth.NewAccessTokenForm) {
+func SettingsApplicationsPost(ctx *context.Context, form auth.NewAccessTokenForm) {
 	ctx.Data["Title"] = ctx.Tr("settings")
 	ctx.Data["PageIsSettingsApplications"] = true
 
 	if ctx.HasError() {
-		tokens, err := models.ListAccessTokens(ctx.User.Id)
+		tokens, err := models.ListAccessTokens(ctx.User.ID)
 		if err != nil {
 			ctx.Handle(500, "ListAccessTokens", err)
 			return
@@ -369,7 +383,7 @@ func SettingsApplicationsPost(ctx *middleware.Context, form auth.NewAccessTokenF
 	}
 
 	t := &models.AccessToken{
-		UID:  ctx.User.Id,
+		UID:  ctx.User.ID,
 		Name: form.Name,
 	}
 	if err := models.NewAccessToken(t); err != nil {
@@ -383,7 +397,7 @@ func SettingsApplicationsPost(ctx *middleware.Context, form auth.NewAccessTokenF
 	ctx.Redirect(setting.AppSubUrl + "/user/settings/applications")
 }
 
-func SettingsDeleteApplication(ctx *middleware.Context) {
+func SettingsDeleteApplication(ctx *context.Context) {
 	if err := models.DeleteAccessTokenByID(ctx.QueryInt64("id")); err != nil {
 		ctx.Flash.Error("DeleteAccessTokenByID: " + err.Error())
 	} else {
@@ -395,7 +409,7 @@ func SettingsDeleteApplication(ctx *middleware.Context) {
 	})
 }
 
-func SettingsDelete(ctx *middleware.Context) {
+func SettingsDelete(ctx *context.Context) {
 	ctx.Data["Title"] = ctx.Tr("settings")
 	ctx.Data["PageIsSettingsDelete"] = true
 

@@ -6,8 +6,8 @@
 
 	.head {
 		.column {
-			padding-top: 5px!important;
-			padding-bottom: 5px!important;
+			padding-top: 5px !important;
+			padding-bottom: 5px !important;
 		}
 		.ui.compact.menu {
 			margin-left: 1rem;
@@ -29,6 +29,10 @@
 			display: block;
 			font-size: 12px;
 			white-space: nowrap;
+		}
+		.octicon.octicon-repo-forked {
+			margin-top: -1px;
+			font-size: 15px;
 		}
 	}
 
@@ -53,13 +57,15 @@
 			.hide {
 				display: none!important;
 			}
+			.item {
+				padding: 0px;
+			}			
 			.label.color {
 				padding: 0 8px;
 				margin-right: 5px;
 			}
 			a {
-				padding-top: 5px;
-				padding-right: 10px;
+				margin: 2px 0;
 				.text {
 					color: #444;
 					&:hover {
@@ -69,8 +75,21 @@
 			}
 		}
 	}
+	.header-wrapper {
+		background-color: #FAFAFA;
+		margin-top: -15px;
+		padding-top: 15px;
+
+		.ui.tabs.divider {
+			border-bottom: none;
+		}
+		.ui.tabular .octicon {
+			margin-right: 5px;
+		}
+	}
 	.filter.menu {
 		.label.color {
+			border-radius: 3px;
 			margin-left: 15px;
 			padding: 0 8px;
 		}
@@ -158,9 +177,12 @@
 				}
 			}
 			tbody {
-				.icon {
+				.octicon {
 					margin-left: 3px;
 					margin-right: 5px;
+					&.octicon-mail-reply {
+						margin-right: 10px;
+					}
 				}
 			}
 			td {
@@ -181,7 +203,7 @@
 			}
 			.view-raw {
 				* {
-					width: 100%;
+					max-width: 100%;
 				}
 				img {
 					padding: 5px 5px 0 5px;
@@ -190,8 +212,8 @@
 
 			.code-view {
 				* {
-					font-size: 13px;
-					font-family: monospace;
+					font-size: 12px;
+					font-family: Consolas, "Liberation Mono", Menlo, Courier, monospace;
 					line-height: 20px;
 				}
 
@@ -206,7 +228,6 @@
 					width: 1%;
 
 					span {
-						font-family: Monaco, Menlo, Consolas, "Courier New", monospace;
 						line-height: 20px;
 						padding: 0 10px;
 						cursor: pointer;
@@ -269,6 +290,10 @@
 			}
 			.content {
 				margin-left: 4em;
+				#avatar-arrow;
+				&:after {
+					border-right-color: #fff;
+				}
 				.markdown {
 					font-size: 14px;
 				}
@@ -288,7 +313,7 @@
 			padding-bottom: 0!important;
 			h1 {
 				font-weight: 300;
-				font-size: 3rem;
+				font-size: 2.3rem;
 				margin-bottom: 5px;
 				.ui.input	{
 					font-size: 0.5em;
@@ -368,17 +393,22 @@
 				.actions {
 					.item {
 						float: left;
-					}
-					a.item {
-						margin-top: 6px;
-						margin-left: 10px;
+						&.tag {
+							margin-right: 5px;
+						}
+						&.action {
+							margin-top: 6px;
+							margin-left: 10px;
+						}
 					}
 				}
 				.content {
 					margin-left: 4em;
 					.header {
+						#avatar-arrow;
 						font-weight: normal;
 						padding: auto 15px;
+						position: relative;
 						color: #767676;
 						background-color: #f7f7f7;
 						border-bottom: 1px solid #eee;
@@ -399,8 +429,33 @@
 					}
 					> .bottom.segment {
 						background: #f3f4f5;
+						.ui.images::after {
+							clear: both;
+							content: ' ';
+							display: block;
+						}
+						a {
+							display: block;
+							float: left;
+							margin: 5px;
+							padding: 5px;
+							height: 150px;
+							border: solid 1px #eee;
+							border-radius: 3px;
+							max-width: 150px;
+							background-color: #fff;
+							&:before {
+								content:' ';
+								display: inline-block;
+								height: 100%;
+								vertical-align: middle;
+							}
+						}
 						.ui.image {
-							max-height: 150px;
+							max-height: 100%;
+							width: auto;
+							margin: 0;
+							vertical-align: middle;
 						}
 					}
 				}
@@ -416,6 +471,7 @@
 					}
 					textarea {
 						height: 200px;
+						font-family: "Consolas", monospace;
 					}
 				}
 
@@ -430,19 +486,23 @@
 				.octicon {
 					width: 30px;
 					float: left;
-					margin-left: -36px;
 					text-align: center;
 					&.octicon-circle-slash {
 						margin-top: 5px;
+						margin-left: -34.5px;
 						font-size: 20px;
 						color: #bd2c00;
 					}
 					&.octicon-primitive-dot {
+						margin-left: -28.5px;
+						margin-right: -1px;
 						font-size: 30px;
 						color: #6cc644;
 					}
 					&.octicon-bookmark {
 						margin-top: 3px;
+						margin-left: -31px;
+						margin-right: -1px;
 						font-size: 25px;
 					}
 				}
@@ -461,6 +521,13 @@
 		.ui.segment.metas {
 			margin-top: -3px;
 		}
+
+		.ui.participants {
+			img {
+				margin-top: 5px;
+				margin-right: 5px;
+			}
+		}
 	}
 	.comment.form {
 		.ui.comments {
@@ -471,6 +538,12 @@
 			.field:first-child {
 				clear: none;
 			}
+			.form {
+				#avatar-arrow;
+				&:after {
+					border-right-color: #fff;
+				}
+			}
 			.tab.segment {
 				border: none;
 				padding: 0;
@@ -478,6 +551,7 @@
 			}
 			textarea {
 				height: 200px;
+                font-family: "Consolas", monospace;
 			}
 		}
 	}
@@ -500,6 +574,9 @@
 				&.open-issues {
 					margin-right: 30px;
 				}
+			}
+			.ui.label {
+				font-size: 1em;
 			}
 		}
 	}
@@ -568,6 +645,14 @@
 		.choose.branch {
 			.octicon {
 				padding-right: 10px;
+			}
+		}
+		.comment.form {
+			.content {
+				#avatar-arrow;
+				&:after {
+					border-right-color: #fff;
+				}
 			}
 		}
 	}
@@ -642,15 +727,17 @@
 	.diff-box {
 		.count {
 			margin-right: 12px;
+			font-size: 13px;
+
 			.bar {
-				background-color: #e75316;
+				background-color: #bd2c00;
 				height: 12px;
 				width: 40px;
 				display: inline-block;
 				margin: 2px 4px 0 4px;
 				vertical-align: text-top;
 				.add {
-					background-color: #77c64a;
+					background-color: #55a532;
 					height: 12px;
 				}
 			}
@@ -666,24 +753,29 @@
 		.file-body.file-code {
 			.lines-num {
 				text-align: right;
-				color: #999;
+				color: #A7A7A7;
 				background: #fafafa;
 				width: 1%;
+
+				span.fold {
+					display: block;
+					text-align: center;
+				}
 			}
 			.lines-num-old {
 				border-right: 1px solid #DDD;
 			}
 		}
 		.code-diff {
-			font-size: 13px;
+			font-size: 12px;
 
 			td {
 				padding: 0;
+				padding-left: 10px;
 				border-top: none;
 			}
 			pre {
 				margin: 0;
-				font-size: 13px;
 			}
 			.lines-num {
 				border-right: 1px solid #d4d4d5;
@@ -691,10 +783,16 @@
 			}
 			tbody {
 				tr {
+
 					&.tag-code {
 						td, pre {
-							background-color: #E0E0E0 !important;
-							border-color: #ADADAD!important;
+							background-color: #F0F0F0 !important;
+							border-color: #D2CECE!important;
+							padding-top: 4px;
+							padding-bottom: 4px;
+						}
+						td.halfwidth {
+							width: 50%;
 						}
 						// td.selected-line, td.selected-line pre {
 						// 	background-color: #ffffdd !important;
@@ -706,9 +804,23 @@
 					// 	}
 					// }
 					&.del-code {
+						// Duplicate here to enforce add code color.
+						td.add-code {
+							background-color: #eaffea !important;
+							border-color: #c1e9c1 !important;
+							pre {
+								background-color: #eaffea !important;
+								border-color: #c1e9c1 !important;
+
+							}
+						}
 						td, pre {
-							background-color: #ffe2dd !important;
-							border-color: #e9aeae !important;
+							background-color: #ffecec !important;
+					    border-color: #f1c0c0 !important;
+						}
+
+						td.halfwidth {
+							width: 50%;
 						}
 						// td.selected-line, td.selected-line pre {
 						// 	background-color: #ffffdd !important;
@@ -716,21 +828,22 @@
 					}
 					&.add-code {
 						td, pre {
-							background-color: #d1ffd6 !important;
-							border-color: #b4e2b4 !important;
+							background-color: #eaffea !important;
+							border-color: #c1e9c1 !important;
+						}
+						td.halfwidth {
+							width: 50%;
 						}
 						// td.selected-line, td.selected-line pre {
 						// 	background-color: #ffffdd !important;
 						// }
 					}
-					&:hover {
-						td {
-							background-color: #FFF8D2 !important;
-							border-color: #F0DB88 !important;
-						}
-						pre {
-							background-color: transparent !important;
-						}
+
+					.removed-code {
+					  background-color: #ff9999;
+					}
+					.added-code {
+					  background-color: #99ff99;
 					}
 				}
 			}
@@ -848,6 +961,10 @@
 		.target {
 			min-width: 500px;
 
+			#tag-name {
+				margin-top: -4px;
+			}
+
 			.at {
 				margin-left: -5px;
 				margin-right: 5px;
@@ -866,35 +983,6 @@
 		}
 	}
 
-	&.watchers {
-		.list {
-			padding: 0;
-
-			.item {
-				list-style: none;
-				width: 32%;
-				margin: 10px 10px 10px 0;
-				padding-bottom: 14px;
-				float: left;
-
-				.avatar {
-					width: 48px;
-					height: 48px;
-					float: left;
-					display: block;
-					margin-right: 10px;
-				}
-				.name {
-					margin-top: 0;
-					margin-bottom: 0;
-					font-weight: normal;
-				}
-				.meta {
-					margin-top: 5px;
-				}
-			}
-		}
-	}
 	&.forks {
 		.list {
 			margin-top: 0;
@@ -929,8 +1017,11 @@
 
 		&.new {
 			.CodeMirror {
-				.CodeMirror-code .cm-comment {
-					background: inherit;
+				.CodeMirror-code {
+					font-family: "Consolas", monospace;
+					.cm-comment {
+						background: inherit;
+					}
 				}
 			}
 
@@ -964,8 +1055,9 @@
 			.collaborator.list {
 				padding: 0;
 
-				.item {
-					padding: 10px 20px;
+				>.item {
+					margin: 0;
+					line-height: 2em;
 
 					&:not(:last-child) {
 						border-bottom: 1px solid #DDD;
@@ -988,6 +1080,36 @@
 	}
 }
 // End of .repository
+
+&.user-cards {
+	.list {
+		padding: 0;
+
+		.item {
+			list-style: none;
+			width: 32%;
+			margin: 10px 10px 10px 0;
+			padding-bottom: 14px;
+			float: left;
+
+			.avatar {
+				width: 48px;
+				height: 48px;
+				float: left;
+				display: block;
+				margin-right: 10px;
+			}
+			.name {
+				margin-top: 0;
+				margin-bottom: 0;
+				font-weight: normal;
+			}
+			.meta {
+				margin-top: 5px;
+			}
+		}
+	}
+}
 
 #search-repo-box,
 #search-user-box {
@@ -1107,6 +1229,9 @@
 				width: 20px;
 				text-align: center;
 			}
+			a {
+				.dont-break-out;
+			}
 		}
 	}
 	.hook.history.list {
@@ -1190,6 +1315,29 @@
 				height: 15px;
 			}
 		}
+	}
+}
+
+#avatar-arrow {
+	&:before, &:after {
+		right: 100%;
+		top: 20px;
+		border: solid transparent;
+		content: " ";
+		height: 0;
+		width: 0;
+		position: absolute;
+		pointer-events: none;
+	}
+	&:before {
+		border-right-color: #D4D4D5;
+		border-width: 9px;
+		margin-top: -9px;
+	}
+	&:after {
+		border-right-color: #f7f7f7;
+		border-width: 8px;
+		margin-top: -8px;
 	}
 }
 

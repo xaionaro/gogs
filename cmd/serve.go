@@ -15,12 +15,13 @@ import (
 
 	"github.com/Unknwon/com"
 	"github.com/codegangsta/cli"
+	gouuid "github.com/satori/go.uuid"
 
 	"github.com/gogits/gogs/models"
+	"github.com/gogits/gogs/modules/base"
 	"github.com/gogits/gogs/modules/httplib"
 	"github.com/gogits/gogs/modules/log"
 	"github.com/gogits/gogs/modules/setting"
-	"github.com/gogits/gogs/modules/uuid"
 )
 
 const (
@@ -40,11 +41,6 @@ var CmdServ = cli.Command{
 func setup(logPath string) {
 	setting.NewContext()
 	log.NewGitLogger(filepath.Join(setting.LogRootPath, logPath))
-
-	if setting.DisableSSH {
-		println("Gogs: SSH has been disabled")
-		os.Exit(1)
-	}
 
 	models.LoadConfigs()
 
@@ -87,7 +83,7 @@ func fail(userMessage, logMessage string, args ...interface{}) {
 	os.Exit(1)
 }
 
-func handleUpdateTask(uuid string, user *models.User, username, reponame string, isWiki bool) {
+func handleUpdateTask(uuid string, user, repoUser *models.User, reponame string, isWiki bool) {
 	task, err := models.GetUpdateTaskByUUID(uuid)
 	if err != nil {
 		if models.IsErrUpdateTaskNotExist(err) {
@@ -103,14 +99,21 @@ func handleUpdateTask(uuid string, user *models.User, username, reponame string,
 		return
 	}
 
-	if err = models.Update(task.RefName, task.OldCommitID, task.NewCommitID,
-		user.Name, username, reponame, user.Id); err != nil {
+	if err = models.PushUpdate(models.PushUpdateOptions{
+		RefName:      task.RefName,
+		OldCommitID:  task.OldCommitID,
+		NewCommitID:  task.NewCommitID,
+		PusherID:     user.ID,
+		PusherName:   user.Name,
+		RepoUserName: repoUser.Name,
+		RepoName:     reponame,
+	}); err != nil {
 		log.GitLogger.Error(2, "Update: %v", err)
 	}
 
 	// Ask for running deliver hook and test pull request tasks.
-	reqURL := setting.LocalUrl + username + "/" + reponame + "/tasks/trigger?branch=" +
-		strings.TrimPrefix(task.RefName, "refs/heads/")
+	reqURL := setting.LocalURL + repoUser.Name + "/" + reponame + "/tasks/trigger?branch=" +
+		strings.TrimPrefix(task.RefName, "refs/heads/") + "&secret=" + base.EncodeMD5(repoUser.Salt)
 	log.GitLogger.Trace("Trigger task: %s", reqURL)
 
 	resp, err := httplib.Head(reqURL).SetTLSClientConfig(&tls.Config{
@@ -126,11 +129,17 @@ func handleUpdateTask(uuid string, user *models.User, username, reponame string,
 	}
 }
 
-func runServ(c *cli.Context) {
+func runServ(c *cli.Context) error {
 	if c.IsSet("config") {
 		setting.CustomConf = c.String("config")
 	}
+
 	setup("serv.log")
+
+	if setting.SSH.Disabled {
+		println("Gogs: SSH has been disabled")
+		return nil
+	}
 
 	if len(c.Args()) < 1 {
 		fail("Not enough arguments", "Not enough arguments")
@@ -140,7 +149,7 @@ func runServ(c *cli.Context) {
 	if len(cmd) == 0 {
 		println("Hi there, You've successfully authenticated, but Gogs does not provide shell access.")
 		println("If this is unexpected, please log in with password and setup Gogs under another user.")
-		return
+		return nil
 	}
 
 	verb, args := parseCmd(cmd)
@@ -163,10 +172,10 @@ func runServ(c *cli.Context) {
 		if models.IsErrUserNotExist(err) {
 			fail("Repository owner does not exist", "Unregistered owner: %s", username)
 		}
-		fail("Internal error", "Failed to get repository owner(%s): %v", username, err)
+		fail("Internal error", "Failed to get repository owner (%s): %v", username, err)
 	}
 
-	repo, err := models.GetRepositoryByName(repoUser.Id, reponame)
+	repo, err := models.GetRepositoryByName(repoUser.ID, reponame)
 	if err != nil {
 		if models.IsErrRepoNotExist(err) {
 			fail(_ACCESS_DENIED_MESSAGE, "Repository does not exist: %s/%s", repoUser.Name, reponame)
@@ -208,7 +217,7 @@ func runServ(c *cli.Context) {
 			}
 			// Check if this deploy key belongs to current repository.
 			if !models.HasDeployKey(key.ID, repo.ID) {
-				fail("Key access denied", "Key access denied: %d-%d", key.ID, repo.ID)
+				fail("Key access denied", "Deploy key access denied: [key_id: %d, repo_id: %d]", key.ID, repo.ID)
 			}
 
 			// Update deploy key activity.
@@ -242,7 +251,7 @@ func runServ(c *cli.Context) {
 		}
 	}
 
-	uuid := uuid.NewV4().String()
+	uuid := gouuid.NewV4().String()
 	os.Setenv("uuid", uuid)
 
 	// Special handle for Windows.
@@ -266,7 +275,7 @@ func runServ(c *cli.Context) {
 	}
 
 	if requestedMode == models.ACCESS_MODE_WRITE {
-		handleUpdateTask(uuid, user, username, reponame, isWiki)
+		handleUpdateTask(uuid, user, repoUser, reponame, isWiki)
 	}
 
 	// Update user key activity.
@@ -281,4 +290,6 @@ func runServ(c *cli.Context) {
 			fail("Internal error", "UpdatePublicKey: %v", err)
 		}
 	}
+
+	return nil
 }

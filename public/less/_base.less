@@ -1,13 +1,17 @@
 @footer-margin: 40px;
 
+.ui.header, .ui.menu, .ui.button, h1, h2, h3, h4, h5, input {
+	font-family: "Helvetica Neue", "Meiryo Ui", "Microsoft YaHei", Arial, Helvetica, sans-serif !important;
+}
 body {
-	font-family: 'Helvetica Neue',Arial,Helvetica,sans-serif,'微软雅黑';
-	background-color: #FAFAFA;
+	font-family: "Helvetica Neue", "Meiryo Ui", "Microsoft YaHei", Arial, Helvetica, sans-serif !important;
+	background-color: #fff;
+	overflow-y: scroll;
 }
 img {
 	border-radius: 3px;
 }
-pre {
+pre, code {
 	font: 12px Consolas, "Liberation Mono", Menlo, Courier, monospace;
 	&.raw {
 		padding: 7px 12px;
@@ -19,6 +23,30 @@ pre {
 		line-height: 1.5;
 		overflow: auto;
 	}
+	&.wrap {
+		white-space: pre-wrap;       /* CSS 3 */
+//		white-space: -moz-normal;  /* Mozilla, since 1999 */
+//		white-space: -normal;      /* Opera 4-6 */
+//		white-space: -o-normal;    /* Opera 7 */
+		word-break: break-word;
+	}
+}
+.dont-break-out {
+  /* These are technically the same, but use both */
+  overflow-wrap: break-word;
+  word-wrap: break-word;
+
+  -ms-word-break: break-all;
+  /* This is the dangerous one in WebKit, as it breaks things wherever */
+  word-break: break-all;
+  /* Instead use this non-standard one: */
+  word-break: break-word;
+
+  /* Adds a hyphen where the word breaks, if supported (No Blink) */
+  -ms-hyphens: auto;
+  -moz-hyphens: auto;
+  -webkit-hyphens: auto;
+  hyphens: auto;
 }
 .full.height {
 	padding: 0;
@@ -54,12 +82,12 @@ pre {
 	.top.menu .menu {
 		z-index: 900;
 	}
+	.icon,
+	.octicon {
+		margin-right: 5px !important;
+	}
 	.head.link.item {
 		padding-right: 0 !important;
-		.dropdown.icon,
-		.menu .octicon {
-			margin-right: 5px;
-		}
 	}
 	.avatar > .ui.image {
 		margin-right: 0;
@@ -91,6 +119,20 @@ pre {
 	}
 	&.right {
 		float: right;
+	}
+
+	&.container {
+		&.fluid {
+			&.padded {
+				padding: 0 10px 0 10px;
+			}
+		}
+	}
+
+	&.form {
+		.ui.button {
+			font-weight: normal;
+		}
 	}
 
 	.text {
@@ -244,6 +286,11 @@ pre {
 			margin-right: 4px;
 		}
 	}
+
+	&.inline.delete-button {
+		padding: 8px 15px;
+		font-weight: normal;
+	}
 }
 
 .overflow.menu {
@@ -307,6 +354,12 @@ footer {
 			}
 		}
 	}
+
+	.ui.language .menu {
+		max-height: 500px;
+		overflow-y: auto;
+		margin-bottom: 7px;
+	}
 }
 
 .hide {
@@ -323,14 +376,6 @@ footer {
 		height: (2px * @i) !important;
 	}
 	.generate-img(@n, (@i + 1));
-}
-
-// ensure Semantic UI .icon font family and 14px size does not apply to .icon.octicon
-.octicon.icon,
-.mega-octicon.icon {
-	font-family: octicons;
-	font-size: 16px;
-	opacity: 1 !important;
 }
 
 // Accessibility
@@ -358,4 +403,10 @@ footer {
 	.ui.container {
 		width: 95%;
 	}
+}
+
+/* Overrides some styles of the Highlight.js plugin */
+.hljs {
+	background: inherit !important;
+	padding: 0 !important;
 }

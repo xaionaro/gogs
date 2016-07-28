@@ -8,18 +8,20 @@ import (
 	"bytes"
 	"io/ioutil"
 	"path"
-	"path/filepath"
 	"strings"
 
 	"github.com/Unknwon/paginater"
 
-	"github.com/gogits/git-shell"
+	"github.com/gogits/git-module"
 
 	"github.com/gogits/gogs/models"
 	"github.com/gogits/gogs/modules/base"
+	"github.com/gogits/gogs/modules/context"
 	"github.com/gogits/gogs/modules/log"
-	"github.com/gogits/gogs/modules/middleware"
+	"github.com/gogits/gogs/modules/markdown"
+	"github.com/gogits/gogs/modules/setting"
 	"github.com/gogits/gogs/modules/template"
+	"github.com/gogits/gogs/modules/template/highlight"
 )
 
 const (
@@ -28,8 +30,12 @@ const (
 	FORKS    base.TplName = "repo/forks"
 )
 
-func Home(ctx *middleware.Context) {
-	ctx.Data["Title"] = ctx.Repo.Repository.Name
+func Home(ctx *context.Context) {
+	title := ctx.Repo.Repository.Owner.Name + "/" + ctx.Repo.Repository.Name
+	if len(ctx.Repo.Repository.Description) > 0 {
+		title += ": " + ctx.Repo.Repository.Description
+	}
+	ctx.Data["Title"] = title
 	ctx.Data["PageIsViewCode"] = true
 	ctx.Data["RequireHighlightJS"] = true
 
@@ -69,7 +75,6 @@ func Home(ctx *middleware.Context) {
 		ctx.Handle(404, "repo.Home", nil)
 		return
 	}
-
 	if entry != nil && !entry.IsDir() {
 		blob := entry.Blob()
 
@@ -80,11 +85,7 @@ func Home(ctx *middleware.Context) {
 			ctx.Data["FileSize"] = blob.Size()
 			ctx.Data["IsFile"] = true
 			ctx.Data["FileName"] = blob.Name()
-			ext := path.Ext(blob.Name())
-			if len(ext) > 0 {
-				ext = ext[1:]
-			}
-			ctx.Data["FileExt"] = ext
+			ctx.Data["HighlightClass"] = highlight.FileNameToHighlightClass(blob.Name())
 			ctx.Data["FileLink"] = rawLink + "/" + treename
 
 			buf := make([]byte, 1024)
@@ -95,26 +96,34 @@ func Home(ctx *middleware.Context) {
 
 			_, isTextFile := base.IsTextFile(buf)
 			_, isImageFile := base.IsImageFile(buf)
+			_, isPDFFile := base.IsPDFFile(buf)
 			ctx.Data["IsFileText"] = isTextFile
 
 			switch {
+			case isPDFFile:
+				ctx.Data["IsPDFFile"] = true
 			case isImageFile:
 				ctx.Data["IsImageFile"] = true
 			case isTextFile:
-				d, _ := ioutil.ReadAll(dataRc)
-				buf = append(buf, d...)
-				readmeExist := base.IsMarkdownFile(blob.Name()) || base.IsReadmeFile(blob.Name())
-				ctx.Data["ReadmeExist"] = readmeExist
-				if readmeExist {
-					ctx.Data["FileContent"] = string(base.RenderMarkdown(buf, path.Dir(treeLink), ctx.Repo.Repository.ComposeMetas()))
+				if blob.Size() >= setting.UI.MaxDisplayFileSize {
+					ctx.Data["IsFileTooLarge"] = true
 				} else {
-					if err, content := template.ToUtf8WithErr(buf); err != nil {
-						if err != nil {
-							log.Error(4, "Convert content encoding: %s", err)
-						}
-						ctx.Data["FileContent"] = string(buf)
+					ctx.Data["IsFileTooLarge"] = false
+					d, _ := ioutil.ReadAll(dataRc)
+					buf = append(buf, d...)
+					readmeExist := markdown.IsMarkdownFile(blob.Name()) || markdown.IsReadmeFile(blob.Name())
+					ctx.Data["ReadmeExist"] = readmeExist
+					if readmeExist {
+						ctx.Data["FileContent"] = string(markdown.Render(buf, path.Dir(treeLink), ctx.Repo.Repository.ComposeMetas()))
 					} else {
-						ctx.Data["FileContent"] = content
+						if err, content := template.ToUtf8WithErr(buf); err != nil {
+							if err != nil {
+								log.Error(4, "Convert content encoding: %s", err)
+							}
+							ctx.Data["FileContent"] = string(buf)
+						} else {
+							ctx.Data["FileContent"] = content
+						}
 					}
 				}
 			}
@@ -134,40 +143,15 @@ func Home(ctx *middleware.Context) {
 		}
 		entries.Sort()
 
-		files := make([][]interface{}, 0, len(entries))
-		for _, te := range entries {
-			if te.Type != git.OBJECT_COMMIT {
-				c, err := ctx.Repo.Commit.GetCommitByPath(filepath.Join(treePath, te.Name()))
-				if err != nil {
-					ctx.Handle(500, "GetCommitByPath", err)
-					return
-				}
-				files = append(files, []interface{}{te, c})
-			} else {
-				sm, err := ctx.Repo.Commit.GetSubModule(path.Join(treename, te.Name()))
-				if err != nil {
-					ctx.Handle(500, "GetSubModule", err)
-					return
-				}
-				smUrl := ""
-				if sm != nil {
-					smUrl = sm.Url
-				}
-
-				c, err := ctx.Repo.Commit.GetCommitByPath(filepath.Join(treePath, te.Name()))
-				if err != nil {
-					ctx.Handle(500, "GetCommitByPath", err)
-					return
-				}
-				files = append(files, []interface{}{te, git.NewSubModuleFile(c, smUrl, te.ID.String())})
-			}
+		ctx.Data["Files"], err = entries.GetCommitsInfo(ctx.Repo.Commit, treePath)
+		if err != nil {
+			ctx.Handle(500, "GetCommitsInfo", err)
+			return
 		}
-		ctx.Data["Files"] = files
 
 		var readmeFile *git.Blob
-
 		for _, f := range entries {
-			if f.IsDir() || !base.IsReadmeFile(f.Name()) {
+			if f.IsDir() || !markdown.IsReadmeFile(f.Name()) {
 				continue
 			} else {
 				readmeFile = f.Blob()
@@ -198,8 +182,8 @@ func Home(ctx *middleware.Context) {
 					d, _ := ioutil.ReadAll(dataRc)
 					buf = append(buf, d...)
 					switch {
-					case base.IsMarkdownFile(readmeFile.Name()):
-						buf = base.RenderMarkdown(buf, treeLink, ctx.Repo.Repository.ComposeMetas())
+					case markdown.IsMarkdownFile(readmeFile.Name()):
+						buf = markdown.Render(buf, treeLink, ctx.Repo.Repository.ComposeMetas())
 					default:
 						buf = bytes.Replace(buf, []byte("\n"), []byte(`<br>`), -1)
 					}
@@ -247,7 +231,7 @@ func Home(ctx *middleware.Context) {
 	ctx.HTML(200, HOME)
 }
 
-func renderItems(ctx *middleware.Context, total int, getter func(page int) ([]*models.User, error)) {
+func RenderUserCards(ctx *context.Context, total int, getter func(page int) ([]*models.User, error), tpl base.TplName) {
 	page := ctx.QueryInt("page")
 	if page <= 0 {
 		page = 1
@@ -260,24 +244,26 @@ func renderItems(ctx *middleware.Context, total int, getter func(page int) ([]*m
 		ctx.Handle(500, "getter", err)
 		return
 	}
-	ctx.Data["Watchers"] = items
+	ctx.Data["Cards"] = items
 
-	ctx.HTML(200, WATCHERS)
+	ctx.HTML(200, tpl)
 }
 
-func Watchers(ctx *middleware.Context) {
+func Watchers(ctx *context.Context) {
 	ctx.Data["Title"] = ctx.Tr("repo.watchers")
+	ctx.Data["CardsTitle"] = ctx.Tr("repo.watchers")
 	ctx.Data["PageIsWatchers"] = true
-	renderItems(ctx, ctx.Repo.Repository.NumWatches, ctx.Repo.Repository.GetWatchers)
+	RenderUserCards(ctx, ctx.Repo.Repository.NumWatches, ctx.Repo.Repository.GetWatchers, WATCHERS)
 }
 
-func Stars(ctx *middleware.Context) {
+func Stars(ctx *context.Context) {
 	ctx.Data["Title"] = ctx.Tr("repo.stargazers")
+	ctx.Data["CardsTitle"] = ctx.Tr("repo.stargazers")
 	ctx.Data["PageIsStargazers"] = true
-	renderItems(ctx, ctx.Repo.Repository.NumStars, ctx.Repo.Repository.GetStargazers)
+	RenderUserCards(ctx, ctx.Repo.Repository.NumStars, ctx.Repo.Repository.GetStargazers, WATCHERS)
 }
 
-func Forks(ctx *middleware.Context) {
+func Forks(ctx *context.Context) {
 	ctx.Data["Title"] = ctx.Tr("repos.forks")
 
 	forks, err := ctx.Repo.Repository.GetForks()

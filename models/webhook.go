@@ -15,13 +15,13 @@ import (
 
 	"github.com/Unknwon/com"
 	"github.com/go-xorm/xorm"
+	gouuid "github.com/satori/go.uuid"
 
 	api "github.com/gogits/go-gogs-client"
 
 	"github.com/gogits/gogs/modules/httplib"
 	"github.com/gogits/gogs/modules/log"
 	"github.com/gogits/gogs/modules/setting"
-	"github.com/gogits/gogs/modules/uuid"
 )
 
 type HookContentType int
@@ -94,8 +94,20 @@ type Webhook struct {
 	HookTaskType HookTaskType
 	Meta         string     `xorm:"TEXT"` // store hook-specific attributes
 	LastStatus   HookStatus // Last delivery status
-	Created      time.Time  `xorm:"CREATED"`
-	Updated      time.Time  `xorm:"UPDATED"`
+
+	Created     time.Time `xorm:"-"`
+	CreatedUnix int64
+	Updated     time.Time `xorm:"-"`
+	UpdatedUnix int64
+}
+
+func (w *Webhook) BeforeInsert() {
+	w.CreatedUnix = time.Now().Unix()
+	w.UpdatedUnix = w.CreatedUnix
+}
+
+func (w *Webhook) BeforeUpdate() {
+	w.UpdatedUnix = time.Now().Unix()
 }
 
 func (w *Webhook) AfterSet(colName string, _ xorm.Cell) {
@@ -106,8 +118,10 @@ func (w *Webhook) AfterSet(colName string, _ xorm.Cell) {
 		if err = json.Unmarshal([]byte(w.Events), w.HookEvent); err != nil {
 			log.Error(3, "Unmarshal[%d]: %v", w.ID, err)
 		}
-	case "created":
-		w.Created = regulateTimeZone(w.Created)
+	case "created_unix":
+		w.Created = time.Unix(w.CreatedUnix, 0).Local()
+	case "updated_unix":
+		w.Updated = time.Unix(w.UpdatedUnix, 0).Local()
 	}
 }
 
@@ -160,16 +174,32 @@ func CreateWebhook(w *Webhook) error {
 	return err
 }
 
-// GetWebhookByID returns webhook by given ID.
-func GetWebhookByID(id int64) (*Webhook, error) {
-	w := new(Webhook)
-	has, err := x.Id(id).Get(w)
+// getWebhook uses argument bean as query condition,
+// ID must be specified and do not assign unnecessary fields.
+func getWebhook(bean *Webhook) (*Webhook, error) {
+	has, err := x.Get(bean)
 	if err != nil {
 		return nil, err
 	} else if !has {
-		return nil, ErrWebhookNotExist{id}
+		return nil, ErrWebhookNotExist{bean.ID}
 	}
-	return w, nil
+	return bean, nil
+}
+
+// GetWebhookByRepoID returns webhook of repository by given ID.
+func GetWebhookByRepoID(repoID, id int64) (*Webhook, error) {
+	return getWebhook(&Webhook{
+		ID:     id,
+		RepoID: repoID,
+	})
+}
+
+// GetWebhookByOrgID returns webhook of organization by given ID.
+func GetWebhookByOrgID(orgID, id int64) (*Webhook, error) {
+	return getWebhook(&Webhook{
+		ID:    id,
+		OrgID: orgID,
+	})
 }
 
 // GetActiveWebhooksByRepoID returns all active webhooks of repository.
@@ -190,25 +220,42 @@ func UpdateWebhook(w *Webhook) error {
 	return err
 }
 
-// DeleteWebhook deletes webhook of repository.
-func DeleteWebhook(id int64) (err error) {
+// deleteWebhook uses argument bean as query condition,
+// ID must be specified and do not assign unnecessary fields.
+func deleteWebhook(bean *Webhook) (err error) {
 	sess := x.NewSession()
 	defer sessionRelease(sess)
 	if err = sess.Begin(); err != nil {
 		return err
 	}
 
-	if _, err = sess.Delete(&Webhook{ID: id}); err != nil {
+	if _, err = sess.Delete(bean); err != nil {
 		return err
-	} else if _, err = sess.Delete(&HookTask{HookID: id}); err != nil {
+	} else if _, err = sess.Delete(&HookTask{HookID: bean.ID}); err != nil {
 		return err
 	}
 
 	return sess.Commit()
 }
 
-// GetWebhooksByOrgId returns all webhooks for an organization.
-func GetWebhooksByOrgId(orgID int64) (ws []*Webhook, err error) {
+// DeleteWebhookByRepoID deletes webhook of repository by given ID.
+func DeleteWebhookByRepoID(repoID, id int64) error {
+	return deleteWebhook(&Webhook{
+		ID:     id,
+		RepoID: repoID,
+	})
+}
+
+// DeleteWebhookByOrgID deletes webhook of organization by given ID.
+func DeleteWebhookByOrgID(orgID, id int64) error {
+	return deleteWebhook(&Webhook{
+		ID:    id,
+		OrgID: orgID,
+	})
+}
+
+// GetWebhooksByOrgID returns all webhooks for an organization.
+func GetWebhooksByOrgID(orgID int64) (ws []*Webhook, err error) {
 	err = x.Find(&ws, &Webhook{OrgID: orgID})
 	return ws, err
 }
@@ -285,7 +332,7 @@ type HookTask struct {
 	HookID          int64
 	UUID            string
 	Type            HookTaskType
-	URL             string
+	URL             string `xorm:"TEXT"`
 	api.Payloader   `xorm:"-"`
 	PayloadContent  string `xorm:"TEXT"`
 	ContentType     HookContentType
@@ -361,7 +408,7 @@ func CreateHookTask(t *HookTask) error {
 	if err != nil {
 		return err
 	}
-	t.UUID = uuid.NewV4().String()
+	t.UUID = gouuid.NewV4().String()
 	t.PayloadContent = string(data)
 	_, err = x.Insert(t)
 	return err
@@ -398,6 +445,7 @@ func PrepareWebhooks(repo *Repository, event HookEventType, p api.Payloader) err
 		return nil
 	}
 
+	var payloader api.Payloader
 	for _, w := range ws {
 		switch event {
 		case HOOK_EVENT_CREATE:
@@ -410,14 +458,16 @@ func PrepareWebhooks(repo *Repository, event HookEventType, p api.Payloader) err
 			}
 		}
 
+		// Use separate objects so modifcations won't be made on payload on non-Gogs type hooks.
 		switch w.HookTaskType {
 		case SLACK:
-			p, err = GetSlackPayload(p, event, w.Meta)
+			payloader, err = GetSlackPayload(p, event, w.Meta)
 			if err != nil {
 				return fmt.Errorf("GetSlackPayload: %v", err)
 			}
 		default:
 			p.SetSecret(w.Secret)
+			payloader = p
 		}
 
 		if err = CreateHookTask(&HookTask{
@@ -425,7 +475,7 @@ func PrepareWebhooks(repo *Repository, event HookEventType, p api.Payloader) err
 			HookID:      w.ID,
 			Type:        w.HookTaskType,
 			URL:         w.URL,
-			Payloader:   p,
+			Payloader:   payloader,
 			ContentType: w.ContentType,
 			EventType:   HOOK_EVENT_PUSH,
 			IsSSL:       w.IsSSL,
@@ -523,7 +573,7 @@ func (t *HookTask) deliver() {
 	}
 
 	defer func() {
-		t.Delivered = time.Now().UTC().UnixNano()
+		t.Delivered = time.Now().UnixNano()
 		if t.IsSucceed {
 			log.Trace("Hook delivered: %s", t.UUID)
 		} else {
@@ -531,7 +581,7 @@ func (t *HookTask) deliver() {
 		}
 
 		// Update webhook last delivery status.
-		w, err := GetWebhookByID(t.HookID)
+		w, err := GetWebhookByRepoID(t.RepoID, t.HookID)
 		if err != nil {
 			log.Error(5, "GetWebhookByID: %v", err)
 			return
@@ -567,14 +617,6 @@ func (t *HookTask) deliver() {
 		return
 	}
 	t.ResponseInfo.Body = string(p)
-
-	switch t.Type {
-	case SLACK:
-		if t.ResponseInfo.Body != "ok" {
-			log.Error(5, "slack failed with: %s", t.ResponseInfo.Body)
-			t.IsSucceed = false
-		}
-	}
 }
 
 // DeliverHooks checks and delivers undelivered hooks.

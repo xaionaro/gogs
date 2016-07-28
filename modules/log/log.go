@@ -23,10 +23,10 @@ func NewLogger(bufLen int64, mode, config string) {
 	logger := newLogger(bufLen)
 
 	isExist := false
-	for _, l := range loggers {
+	for i, l := range loggers {
 		if l.adapter == mode {
 			isExist = true
-			l = logger
+			loggers[i] = logger
 		}
 	}
 	if !isExist {
@@ -37,6 +37,7 @@ func NewLogger(bufLen int64, mode, config string) {
 	}
 }
 
+// FIXME: use same log level as other loggers.
 func NewGitLogger(logPath string) {
 	os.MkdirAll(path.Dir(logPath), os.ModePerm)
 	GitLogger = newLogger(0)

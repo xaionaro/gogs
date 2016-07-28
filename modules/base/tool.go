@@ -15,21 +15,20 @@ import (
 	"hash"
 	"html/template"
 	"math"
-	"regexp"
+	"net/http"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/Unknwon/com"
 	"github.com/Unknwon/i18n"
-	"github.com/microcosm-cc/bluemonday"
 
 	"github.com/gogits/chardet"
 
-	"github.com/gogits/gogs/modules/avatar"
+	"github.com/gogits/gogs/modules/log"
 	"github.com/gogits/gogs/modules/setting"
 )
-
-var Sanitizer = bluemonday.UGCPolicy().AllowAttrs("class").Matching(regexp.MustCompile(`[\p{L}\p{N}\s\-_',:\[\]!\./\\\(\)&]*`)).OnElements("code")
 
 // EncodeMD5 encodes string to md5 hex value.
 func EncodeMD5(str string) string {
@@ -53,11 +52,18 @@ func ShortSha(sha1 string) string {
 }
 
 func DetectEncoding(content []byte) (string, error) {
-	detector := chardet.NewTextDetector()
-	result, err := detector.DetectBest(content)
+	if utf8.Valid(content) {
+		log.Debug("Detected encoding: utf-8 (fast)")
+		return "UTF-8", nil
+	}
+
+	result, err := chardet.NewTextDetector().DetectBest(content)
 	if result.Charset != "UTF-8" && len(setting.Repository.AnsiCharset) > 0 {
+		log.Debug("Using default AnsiCharset: %s", setting.Repository.AnsiCharset)
 		return setting.Repository.AnsiCharset, err
 	}
+
+	log.Debug("Detected encoding: %s", result.Charset)
 	return result.Charset, err
 }
 
@@ -91,6 +97,7 @@ func GetRandomString(n int, alphabets ...byte) string {
 }
 
 // http://code.google.com/p/go/source/browse/pbkdf2/pbkdf2.go?repo=crypto
+// FIXME: use https://godoc.org/golang.org/x/crypto/pbkdf2?
 func PBKDF2(password, salt []byte, iter, keyLen int, h func() hash.Hash) []byte {
 	prf := hmac.New(h, password)
 	hashLen := prf.Size()
@@ -188,17 +195,22 @@ func CreateTimeLimitCode(data string, minutes int, startInf interface{}) string 
 	return code
 }
 
-// AvatarLink returns avatar link by given e-mail.
+// HashEmail hashes email address to MD5 string.
+// https://en.gravatar.com/site/implement/hash/
+func HashEmail(email string) string {
+	email = strings.ToLower(strings.TrimSpace(email))
+	h := md5.New()
+	h.Write([]byte(email))
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// AvatarLink returns avatar link by given email.
 func AvatarLink(email string) string {
 	if setting.DisableGravatar || setting.OfflineMode {
-		return setting.AppSubUrl + "/img/avatar_default.jpg"
+		return setting.AppSubUrl + "/img/avatar_default.png"
 	}
 
-	gravatarHash := avatar.HashEmail(email)
-	if setting.Service.EnableCacheAvatar {
-		return setting.AppSubUrl + "/avatar/" + gravatarHash
-	}
-	return setting.GravatarSource + gravatarHash
+	return setting.GravatarSource + HashEmail(email)
 }
 
 // Seconds-based time units
@@ -444,6 +456,24 @@ func Subtract(left interface{}, right interface{}) interface{} {
 	}
 }
 
+// EllipsisString returns a truncated short string,
+// it appends '...' in the end of the length of string is too large.
+func EllipsisString(str string, length int) string {
+	if len(str) < length {
+		return str
+	}
+	return str[:length-3] + "..."
+}
+
+// TruncateString returns a truncated string with given limit,
+// it returns input string if length is not reached limit.
+func TruncateString(str string, limit int) string {
+	if len(str) < limit {
+		return str
+	}
+	return str[:limit]
+}
+
 // StringsToInt64s converts a slice of string to a slice of int64.
 func StringsToInt64s(strs []string) []int64 {
 	ints := make([]int64, len(strs))
@@ -469,4 +499,34 @@ func Int64sToMap(ints []int64) map[int64]bool {
 		m[i] = true
 	}
 	return m
+}
+
+// IsLetter reports whether the rune is a letter (category L).
+// https://github.com/golang/go/blob/master/src/go/scanner/scanner.go#L257
+func IsLetter(ch rune) bool {
+	return 'a' <= ch && ch <= 'z' || 'A' <= ch && ch <= 'Z' || ch == '_' || ch >= 0x80 && unicode.IsLetter(ch)
+}
+
+func IsTextFile(data []byte) (string, bool) {
+	contentType := http.DetectContentType(data)
+	if strings.Index(contentType, "text/") != -1 {
+		return contentType, true
+	}
+	return contentType, false
+}
+
+func IsImageFile(data []byte) (string, bool) {
+	contentType := http.DetectContentType(data)
+	if strings.Index(contentType, "image/") != -1 {
+		return contentType, true
+	}
+	return contentType, false
+}
+
+func IsPDFFile(data []byte) (string, bool) {
+	contentType := http.DetectContentType(data)
+	if strings.Index(contentType, "application/pdf") != -1 {
+		return contentType, true
+	}
+	return contentType, false
 }

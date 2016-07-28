@@ -7,6 +7,7 @@ package models
 import (
 	"fmt"
 	"io/ioutil"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -15,7 +16,7 @@ import (
 
 	"github.com/Unknwon/com"
 
-	"github.com/gogits/git-shell"
+	"github.com/gogits/git-module"
 
 	"github.com/gogits/gogs/modules/setting"
 )
@@ -65,12 +66,15 @@ var wikiWorkingPool = &workingPool{
 
 // ToWikiPageURL formats a string to corresponding wiki URL name.
 func ToWikiPageURL(name string) string {
-	return strings.Replace(name, " ", "-", -1)
+	return url.QueryEscape(strings.Replace(name, " ", "-", -1))
 }
 
-// ToWikiPageName formats a URL back to corresponding wiki page name.
-func ToWikiPageName(name string) string {
-	return strings.Replace(name, "-", " ", -1)
+// ToWikiPageName formats a URL back to corresponding wiki page name,
+// and removes leading characters './' to prevent changing files
+// that are not belong to wiki repository.
+func ToWikiPageName(urlString string) string {
+	name, _ := url.QueryUnescape(strings.Replace(urlString, "-", " ", -1))
+	return strings.Replace(strings.TrimLeft(name, "./"), "/", " ", -1)
 }
 
 // WikiCloneLink returns clone URLs of repository wiki.
@@ -114,6 +118,23 @@ func (repo *Repository) UpdateLocalWiki() error {
 	return updateLocalCopy(repo.WikiPath(), repo.LocalWikiPath())
 }
 
+// discardLocalWikiChanges discards local commits make sure
+// it is even to remote branch when local copy exists.
+func discardLocalWikiChanges(localPath string) error {
+	if !com.IsExist(localPath) {
+		return nil
+	}
+	// No need to check if nothing in the repository.
+	if !git.IsBranchExist(localPath, "master") {
+		return nil
+	}
+
+	if err := git.ResetHEAD(localPath, true, "origin/master"); err != nil {
+		return fmt.Errorf("ResetHEAD: %v", err)
+	}
+	return nil
+}
+
 // updateWikiPage adds new page to repository wiki.
 func (repo *Repository) updateWikiPage(doer *User, oldTitle, title, content, message string, isNew bool) (err error) {
 	wikiWorkingPool.CheckIn(com.ToStr(repo.ID))
@@ -124,22 +145,13 @@ func (repo *Repository) updateWikiPage(doer *User, oldTitle, title, content, mes
 	}
 
 	localPath := repo.LocalWikiPath()
-
-	// Discard local commits make sure even to remote when local copy exists.
-	if com.IsExist(localPath) {
-		// No need to check if nothing in the repository.
-		if git.IsBranchExist(localPath, "master") {
-			if err = git.ResetHEAD(localPath, true, "origin/master"); err != nil {
-				return fmt.Errorf("Reset: %v", err)
-			}
-		}
-	}
-
-	if err = repo.UpdateLocalWiki(); err != nil {
+	if err = discardLocalWikiChanges(localPath); err != nil {
+		return fmt.Errorf("discardLocalWikiChanges: %v", err)
+	} else if err = repo.UpdateLocalWiki(); err != nil {
 		return fmt.Errorf("UpdateLocalWiki: %v", err)
 	}
 
-	title = ToWikiPageName(strings.Replace(title, "/", " ", -1))
+	title = ToWikiPageName(title)
 	filename := path.Join(localPath, title+".md")
 
 	// If not a new file, show perform update not create.
@@ -150,6 +162,13 @@ func (repo *Repository) updateWikiPage(doer *User, oldTitle, title, content, mes
 	} else {
 		os.Remove(path.Join(localPath, oldTitle+".md"))
 	}
+
+	// SECURITY: if new file is a symlink to non-exist critical file,
+	// attack content can be written to the target file (e.g. authorized_keys2)
+	// as a new page operation.
+	// So we want to make sure the symlink is removed before write anything.
+	// The new file we created will be in normal text format.
+	os.Remove(filename)
 
 	if err = ioutil.WriteFile(filename, []byte(content), 0666); err != nil {
 		return fmt.Errorf("WriteFile: %v", err)
@@ -175,4 +194,32 @@ func (repo *Repository) AddWikiPage(doer *User, title, content, message string) 
 
 func (repo *Repository) EditWikiPage(doer *User, oldTitle, title, content, message string) error {
 	return repo.updateWikiPage(doer, oldTitle, title, content, message, false)
+}
+
+func (repo *Repository) DeleteWikiPage(doer *User, title string) (err error) {
+	wikiWorkingPool.CheckIn(com.ToStr(repo.ID))
+	defer wikiWorkingPool.CheckOut(com.ToStr(repo.ID))
+
+	localPath := repo.LocalWikiPath()
+	if err = discardLocalWikiChanges(localPath); err != nil {
+		return fmt.Errorf("discardLocalWikiChanges: %v", err)
+	} else if err = repo.UpdateLocalWiki(); err != nil {
+		return fmt.Errorf("UpdateLocalWiki: %v", err)
+	}
+
+	title = ToWikiPageName(title)
+	filename := path.Join(localPath, title+".md")
+	os.Remove(filename)
+
+	message := "Delete page '" + title + "'"
+
+	if err = git.AddChanges(localPath, true); err != nil {
+		return fmt.Errorf("AddChanges: %v", err)
+	} else if err = git.CommitChanges(localPath, message, doer.NewGitSig()); err != nil {
+		return fmt.Errorf("CommitChanges: %v", err)
+	} else if err = git.Push(localPath, "origin", "master"); err != nil {
+		return fmt.Errorf("Push: %v", err)
+	}
+
+	return nil
 }
