@@ -6,12 +6,21 @@
 				<img class="logo" src="{{AppSubUrl}}/img/gogs-lg.png" />
 			</div>
 			<br><br>
+			{{if eq .Lang "ru-RU"}}
+			<div class="hero">
+				<h1 class="ui icon header title">
+					Сервер совместной разработки НИЯУ МИФИ
+				</h1>
+			</div>
+			См. также: <a href='https://gitlab.mephi.ru' target='_blank'>https://gitlab.mephi.ru/</a>
+			{{else}}
 			<div class="hero">
 				<h1 class="ui icon header title">
 					NRNU MEPhI git-based development collaboration service
 				</h1>
 			</div>
-			See also: <a href='https://gitlab.mephi.ru'>https://gitlab.mephi.ru/</a>
+			See also: <a href='https://gitlab.mephi.ru' target='_blank'>https://gitlab.mephi.ru/</a>
+			{{end}}
 		</div>
 	</div>
 </div>
