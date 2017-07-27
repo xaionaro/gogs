@@ -8,8 +8,8 @@ import (
 	"bytes"
 	"container/list"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"image"
 	_ "image/jpeg"
@@ -23,14 +23,16 @@ import (
 	"github.com/Unknwon/com"
 	"github.com/go-xorm/xorm"
 	"github.com/nfnt/resize"
+	"golang.org/x/crypto/pbkdf2"
+	log "gopkg.in/clog.v1"
 
 	"github.com/gogits/git-module"
+	api "github.com/gogits/go-gogs-client"
 
-	"github.com/gogits/gogs/modules/avatar"
-	"github.com/gogits/gogs/modules/base"
-	"github.com/gogits/gogs/modules/log"
-	"github.com/gogits/gogs/modules/markdown"
-	"github.com/gogits/gogs/modules/setting"
+	"github.com/gogits/gogs/models/errors"
+	"github.com/gogits/gogs/pkg/avatar"
+	"github.com/gogits/gogs/pkg/setting"
+	"github.com/gogits/gogs/pkg/tool"
 )
 
 type UserType int
@@ -40,19 +42,9 @@ const (
 	USER_TYPE_ORGANIZATION
 )
 
-var (
-	ErrUserNotKeyOwner       = errors.New("User does not the owner of public key")
-	ErrEmailNotExist         = errors.New("E-mail does not exist")
-	ErrEmailNotActivated     = errors.New("E-mail address has not been activated")
-	ErrUserNameIllegal       = errors.New("User name contains illegal characters")
-	ErrLoginSourceNotExist   = errors.New("Login source does not exist")
-	ErrLoginSourceNotActived = errors.New("Login source is not actived")
-	ErrUnsupportedLoginType  = errors.New("Login source is unknown")
-)
-
 // User represents the object of individual and member of organization.
 type User struct {
-	ID        int64  `xorm:"pk autoincr"`
+	ID        int64
 	LowerName string `xorm:"UNIQUE NOT NULL"`
 	Name      string `xorm:"UNIQUE NOT NULL"`
 	FullName  string
@@ -121,12 +113,20 @@ func (u *User) BeforeUpdate() {
 
 func (u *User) AfterSet(colName string, _ xorm.Cell) {
 	switch colName {
-	case "full_name":
-		u.FullName = markdown.Sanitizer.Sanitize(u.FullName)
 	case "created_unix":
 		u.Created = time.Unix(u.CreatedUnix, 0).Local()
 	case "updated_unix":
 		u.Updated = time.Unix(u.UpdatedUnix, 0).Local()
+	}
+}
+
+func (u *User) APIFormat() *api.User {
+	return &api.User{
+		ID:        u.ID,
+		UserName:  u.Name,
+		FullName:  u.FullName,
+		Email:     u.Email,
+		AvatarUrl: u.AvatarLink(),
 	}
 }
 
@@ -137,7 +137,7 @@ func (u *User) IsLocal() bool {
 
 // HasForkedRepo checks if user has already forked a repository with given ID.
 func (u *User) HasForkedRepo(repoID int64) bool {
-	_, has := HasForkedRepo(u.ID, repoID)
+	_, has, _ := HasForkedRepo(u.ID, repoID)
 	return has
 }
 
@@ -158,6 +158,10 @@ func (u *User) CanCreateRepo() bool {
 	return u.NumRepos < u.MaxRepoCreation
 }
 
+func (u *User) CanCreateOrganization() bool {
+	return !setting.Admin.DisableRegularOrgCreation || u.IsAdmin
+}
+
 // CanEditGitHook returns true if user can edit Git hooks.
 func (u *User) CanEditGitHook() bool {
 	return u.IsAdmin || u.AllowGitHook
@@ -165,25 +169,29 @@ func (u *User) CanEditGitHook() bool {
 
 // CanImportLocal returns true if user can migrate repository by local path.
 func (u *User) CanImportLocal() bool {
-	return u.IsAdmin || u.AllowImportLocal
+	return setting.Repository.EnableLocalPathMigration && (u.IsAdmin || u.AllowImportLocal)
 }
 
 // DashboardLink returns the user dashboard page link.
 func (u *User) DashboardLink() string {
 	if u.IsOrganization() {
-		return setting.AppSubUrl + "/org/" + u.Name + "/dashboard/"
+		return setting.AppSubURL + "/org/" + u.Name + "/dashboard/"
 	}
-	return setting.AppSubUrl + "/"
+	return setting.AppSubURL + "/"
 }
 
 // HomeLink returns the user or organization home page link.
 func (u *User) HomeLink() string {
-	return setting.AppSubUrl + "/" + u.Name
+	return setting.AppSubURL + "/" + u.Name
+}
+
+func (u *User) HTMLURL() string {
+	return setting.AppURL + u.Name
 }
 
 // GenerateEmailActivateCode generates an activate code based on user information and given e-mail.
 func (u *User) GenerateEmailActivateCode(email string) string {
-	code := base.CreateTimeLimitCode(
+	code := tool.CreateTimeLimitCode(
 		com.ToStr(u.ID)+email+u.LowerName+u.Passwd+u.Rands,
 		setting.Service.ActiveCodeLives, nil)
 
@@ -230,8 +238,11 @@ func (u *User) GenerateRandomAvatar() error {
 	return nil
 }
 
+// RelAvatarLink returns relative avatar link to the site domain,
+// which includes app sub-url as prefix. However, it is possible
+// to return full URL if user enables Gravatar-like service.
 func (u *User) RelAvatarLink() string {
-	defaultImgUrl := "/img/avatar_default.png"
+	defaultImgUrl := setting.AppSubURL + "/img/avatar_default.png"
 	if u.ID == -1 {
 		return defaultImgUrl
 	}
@@ -241,7 +252,7 @@ func (u *User) RelAvatarLink() string {
 		if !com.IsExist(u.CustomAvatarPath()) {
 			return defaultImgUrl
 		}
-		return "/avatars/" + com.ToStr(u.ID)
+		return setting.AppSubURL + "/avatars/" + com.ToStr(u.ID)
 	case setting.DisableGravatar, setting.OfflineMode:
 		if !com.IsExist(u.CustomAvatarPath()) {
 			if err := u.GenerateRandomAvatar(); err != nil {
@@ -249,16 +260,16 @@ func (u *User) RelAvatarLink() string {
 			}
 		}
 
-		return "/avatars/" + com.ToStr(u.ID)
+		return setting.AppSubURL + "/avatars/" + com.ToStr(u.ID)
 	}
-	return setting.GravatarSource + u.Avatar
+	return tool.AvatarLink(u.AvatarEmail)
 }
 
-// AvatarLink returns user avatar link.
+// AvatarLink returns user avatar absolute link.
 func (u *User) AvatarLink() string {
 	link := u.RelAvatarLink()
 	if link[0] == '/' && link[1] != '/' {
-		return strings.TrimSuffix(setting.AppUrl, "/") + link
+		return setting.AppURL + strings.TrimPrefix(link, setting.AppSubURL)[1:]
 	}
 	return link
 }
@@ -294,7 +305,7 @@ func (u *User) GetFollowing(page int) ([]*User, error) {
 // NewGitSig generates and returns the signature of given user.
 func (u *User) NewGitSig() *git.Signature {
 	return &git.Signature{
-		Name:  u.Name,
+		Name:  u.DisplayName(),
 		Email: u.Email,
 		When:  time.Now(),
 	}
@@ -302,7 +313,7 @@ func (u *User) NewGitSig() *git.Signature {
 
 // EncodePasswd encodes password to safe format.
 func (u *User) EncodePasswd() {
-	newPasswd := base.PBKDF2([]byte(u.Passwd), []byte(u.Salt), 10000, 50, sha256.New)
+	newPasswd := pbkdf2.Key([]byte(u.Passwd), []byte(u.Salt), 10000, 50, sha256.New)
 	u.Passwd = fmt.Sprintf("%x", newPasswd)
 }
 
@@ -310,7 +321,7 @@ func (u *User) EncodePasswd() {
 func (u *User) ValidatePassword(passwd string) bool {
 	newUser := &User{Passwd: passwd, Salt: u.Salt}
 	newUser.EncodePasswd()
-	return u.Passwd == newUser.Passwd
+	return subtle.ConstantTimeCompare([]byte(u.Passwd), []byte(newUser.Passwd)) == 1
 }
 
 // UploadAvatar saves custom avatar for user.
@@ -324,7 +335,7 @@ func (u *User) UploadAvatar(data []byte) error {
 	m := resize.Resize(avatar.AVATAR_SIZE, avatar.AVATAR_SIZE, img, resize.NearestNeighbor)
 
 	sess := x.NewSession()
-	defer sessionRelease(sess)
+	defer sess.Close()
 	if err = sess.Begin(); err != nil {
 		return err
 	}
@@ -350,7 +361,7 @@ func (u *User) UploadAvatar(data []byte) error {
 
 // DeleteAvatar deletes the user's custom avatar.
 func (u *User) DeleteAvatar() error {
-	log.Trace("DeleteAvatar[%d]: %s", u.ID, u.CustomAvatarPath())
+	log.Trace("DeleteAvatar [%d]: %s", u.ID, u.CustomAvatarPath())
 	os.Remove(u.CustomAvatarPath())
 
 	u.UseCustomAvatar = false
@@ -362,18 +373,18 @@ func (u *User) DeleteAvatar() error {
 
 // IsAdminOfRepo returns true if user has admin or higher access of repository.
 func (u *User) IsAdminOfRepo(repo *Repository) bool {
-	has, err := HasAccess(u, repo, ACCESS_MODE_ADMIN)
+	has, err := HasAccess(u.ID, repo, ACCESS_MODE_ADMIN)
 	if err != nil {
-		log.Error(3, "HasAccess: %v", err)
+		log.Error(2, "HasAccess: %v", err)
 	}
 	return has
 }
 
 // IsWriterOfRepo returns true if user has write access to given repository.
 func (u *User) IsWriterOfRepo(repo *Repository) bool {
-	has, err := HasAccess(u, repo, ACCESS_MODE_WRITE)
+	has, err := HasAccess(u.ID, repo, ACCESS_MODE_WRITE)
 	if err != nil {
-		log.Error(3, "HasAccess: %v", err)
+		log.Error(2, "HasAccess: %v", err)
 	}
 	return has
 }
@@ -393,6 +404,11 @@ func (u *User) IsPublicMember(orgId int64) bool {
 	return IsPublicMembership(orgId, u.ID)
 }
 
+// IsEnabledTwoFactor returns true if user has enabled two-factor authentication.
+func (u *User) IsEnabledTwoFactor() bool {
+	return IsUserEnabledTwoFactor(u.ID)
+}
+
 func (u *User) getOrganizationCount(e Engine) (int64, error) {
 	return e.Where("uid=?", u.ID).Count(new(OrgUser))
 }
@@ -404,7 +420,12 @@ func (u *User) GetOrganizationCount() (int64, error) {
 
 // GetRepositories returns repositories that user owns, including private repositories.
 func (u *User) GetRepositories(page, pageSize int) (err error) {
-	u.Repos, err = GetUserRepositories(u.ID, true, page, pageSize)
+	u.Repos, err = GetUserRepositories(&UserRepoOptions{
+		UserID:   u.ID,
+		Private:  true,
+		Page:     page,
+		PageSize: pageSize,
+	})
 	return err
 }
 
@@ -420,18 +441,18 @@ func (u *User) GetOwnedOrganizations() (err error) {
 }
 
 // GetOrganizations returns all organizations that user belongs to.
-func (u *User) GetOrganizations(all bool) error {
-	ous, err := GetOrgUsersByUserID(u.ID, all)
+func (u *User) GetOrganizations(showPrivate bool) error {
+	orgIDs, err := GetOrgIDsByUserID(u.ID, showPrivate)
 	if err != nil {
-		return err
+		return fmt.Errorf("GetOrgIDsByUserID: %v", err)
+	}
+	if len(orgIDs) == 0 {
+		return nil
 	}
 
-	u.Orgs = make([]*User, len(ous))
-	for i, ou := range ous {
-		u.Orgs[i], err = GetUserByID(ou.OrgID)
-		if err != nil {
-			return err
-		}
+	u.Orgs = make([]*User, 0, len(orgIDs))
+	if err = x.Where("type = ?", USER_TYPE_ORGANIZATION).In("id", orgIDs).Find(&u.Orgs); err != nil {
+		return err
 	}
 	return nil
 }
@@ -446,7 +467,13 @@ func (u *User) DisplayName() string {
 }
 
 func (u *User) ShortName(length int) string {
-	return base.EllipsisString(u.Name, length)
+	return tool.EllipsisString(u.Name, length)
+}
+
+// IsMailable checks if a user is elegible
+// to receive emails.
+func (u *User) IsMailable() bool {
+	return u.IsActive
 }
 
 // IsUserExist checks if given user name exist,
@@ -457,35 +484,35 @@ func IsUserExist(uid int64, name string) (bool, error) {
 	if len(name) == 0 {
 		return false, nil
 	}
-	return x.Where("id!=?", uid).Get(&User{LowerName: strings.ToLower(name)})
+	return x.Where("id != ?", uid).Get(&User{LowerName: strings.ToLower(name)})
 }
 
 // GetUserSalt returns a ramdom user salt token.
-func GetUserSalt() string {
-	return base.GetRandomString(10)
+func GetUserSalt() (string, error) {
+	return tool.RandomString(10)
 }
 
-// NewFakeUser creates and returns a fake user for someone has deleted his/her account.
-func NewFakeUser() *User {
+// NewGhostUser creates and returns a fake user for someone has deleted his/her account.
+func NewGhostUser() *User {
 	return &User{
 		ID:        -1,
-		Name:      "Someone",
-		LowerName: "someone",
+		Name:      "Ghost",
+		LowerName: "ghost",
 	}
 }
 
 var (
-	reversedUsernames    = []string{"debug", "raw", "install", "api", "avatar", "user", "org", "help", "stars", "issues", "pulls", "commits", "repo", "template", "admin", "new", ".", ".."}
-	reversedUserPatterns = []string{"*.keys"}
+	reservedUsernames    = []string{"assets", "css", "img", "js", "less", "plugins", "debug", "raw", "install", "api", "avatar", "user", "org", "help", "stars", "issues", "pulls", "commits", "repo", "template", "admin", "new", ".", ".."}
+	reservedUserPatterns = []string{"*.keys"}
 )
 
 // isUsableName checks if name is reserved or pattern of name is not allowed
-// based on given reversed names and patterns.
+// based on given reserved names and patterns.
 // Names are exact match, patterns can be prefix or suffix match with placeholder '*'.
 func isUsableName(names, patterns []string, name string) error {
 	name = strings.TrimSpace(strings.ToLower(name))
 	if utf8.RuneCountInString(name) == 0 {
-		return ErrNameEmpty
+		return errors.EmptyName{}
 	}
 
 	for i := range names {
@@ -505,7 +532,7 @@ func isUsableName(names, patterns []string, name string) error {
 }
 
 func IsUsableUsername(name string) error {
-	return isUsableName(reversedUsernames, reversedUserPatterns, name)
+	return isUsableName(reservedUsernames, reservedUserPatterns, name)
 }
 
 // CreateUser creates record of a new user.
@@ -531,14 +558,18 @@ func CreateUser(u *User) (err error) {
 
 	u.LowerName = strings.ToLower(u.Name)
 	u.AvatarEmail = u.Email
-	u.Avatar = base.HashEmail(u.AvatarEmail)
-	u.Rands = GetUserSalt()
-	u.Salt = GetUserSalt()
+	u.Avatar = tool.HashEmail(u.AvatarEmail)
+	if u.Rands, err = GetUserSalt(); err != nil {
+		return err
+	}
+	if u.Salt, err = GetUserSalt(); err != nil {
+		return err
+	}
 	u.EncodePasswd()
 	u.MaxRepoCreation = -1
 
 	sess := x.NewSession()
-	defer sessionRelease(sess)
+	defer sess.Close()
 	if err = sess.Begin(); err != nil {
 		return err
 	}
@@ -568,19 +599,21 @@ func Users(page, pageSize int) ([]*User, error) {
 	return users, x.Limit(pageSize, (page-1)*pageSize).Where("type=0").Asc("id").Find(&users)
 }
 
-// get user by erify code
-func getVerifyUser(code string) (user *User) {
-	if len(code) <= base.TimeLimitCodeLength {
+// parseUserFromCode returns user by username encoded in code.
+// It returns nil if code or username is invalid.
+func parseUserFromCode(code string) (user *User) {
+	if len(code) <= tool.TIME_LIMIT_CODE_LENGTH {
 		return nil
 	}
 
-	// use tail hex username query user
-	hexStr := code[base.TimeLimitCodeLength:]
+	// Use tail hex username to query user
+	hexStr := code[tool.TIME_LIMIT_CODE_LENGTH:]
 	if b, err := hex.DecodeString(hexStr); err == nil {
 		if user, err = GetUserByName(string(b)); user != nil {
 			return user
+		} else if !errors.IsUserNotExist(err) {
+			log.Error(2, "GetUserByName: %v", err)
 		}
-		log.Error(4, "user.getVerifyUser: %v", err)
 	}
 
 	return nil
@@ -590,12 +623,12 @@ func getVerifyUser(code string) (user *User) {
 func VerifyUserActiveCode(code string) (user *User) {
 	minutes := setting.Service.ActiveCodeLives
 
-	if user = getVerifyUser(code); user != nil {
+	if user = parseUserFromCode(code); user != nil {
 		// time limit code
-		prefix := code[:base.TimeLimitCodeLength]
+		prefix := code[:tool.TIME_LIMIT_CODE_LENGTH]
 		data := com.ToStr(user.ID) + user.Email + user.LowerName + user.Passwd + user.Rands
 
-		if base.VerifyTimeLimitCode(data, minutes, prefix) {
+		if tool.VerifyTimeLimitCode(data, minutes, prefix) {
 			return user
 		}
 	}
@@ -606,12 +639,12 @@ func VerifyUserActiveCode(code string) (user *User) {
 func VerifyActiveEmailCode(code, email string) *EmailAddress {
 	minutes := setting.Service.ActiveCodeLives
 
-	if user := getVerifyUser(code); user != nil {
+	if user := parseUserFromCode(code); user != nil {
 		// time limit code
-		prefix := code[:base.TimeLimitCodeLength]
+		prefix := code[:tool.TIME_LIMIT_CODE_LENGTH]
 		data := com.ToStr(user.ID) + email + user.LowerName + user.Passwd + user.Rands
 
-		if base.VerifyTimeLimitCode(data, minutes, prefix) {
+		if tool.VerifyTimeLimitCode(data, minutes, prefix) {
 			emailAddress := &EmailAddress{Email: email}
 			if has, _ := x.Get(emailAddress); has {
 				return emailAddress
@@ -647,7 +680,13 @@ func ChangeUserName(u *User, newUserName string) (err error) {
 		return fmt.Errorf("Delete repository wiki local copy: %v", err)
 	}
 
-	return os.Rename(UserPath(u.Name), UserPath(newUserName))
+	// Rename or create user base directory
+	baseDir := UserPath(u.Name)
+	newBaseDir := UserPath(newUserName)
+	if com.IsExist(baseDir) {
+		return os.Rename(baseDir, newBaseDir)
+	}
+	return os.MkdirAll(newBaseDir, os.ModePerm)
 }
 
 func updateUser(e Engine, u *User) error {
@@ -664,15 +703,14 @@ func updateUser(e Engine, u *User) error {
 		if len(u.AvatarEmail) == 0 {
 			u.AvatarEmail = u.Email
 		}
-		u.Avatar = base.HashEmail(u.AvatarEmail)
+		u.Avatar = tool.HashEmail(u.AvatarEmail)
 	}
 
 	u.LowerName = strings.ToLower(u.Name)
-	u.Location = base.TruncateString(u.Location, 255)
-	u.Website = base.TruncateString(u.Website, 255)
-	u.Description = base.TruncateString(u.Description, 255)
+	u.Location = tool.TruncateString(u.Location, 255)
+	u.Website = tool.TruncateString(u.Website, 255)
+	u.Description = tool.TruncateString(u.Description, 255)
 
-	u.FullName = markdown.Sanitizer.Sanitize(u.FullName)
 	_, err := e.Id(u.ID).AllCols().Update(u)
 	return err
 }
@@ -801,7 +839,7 @@ func deleteUser(e *xorm.Session, u *User) error {
 // but issues/comments/pulls will be kept and shown as someone has been deleted.
 func DeleteUser(u *User) (err error) {
 	sess := x.NewSession()
-	defer sessionRelease(sess)
+	defer sess.Close()
 	if err = sess.Begin(); err != nil {
 		return err
 	}
@@ -846,11 +884,11 @@ func UserPath(userName string) string {
 
 func GetUserByKeyID(keyID int64) (*User, error) {
 	user := new(User)
-	has, err := x.Sql("SELECT a.* FROM `user` AS a, public_key AS b WHERE a.id = b.owner_id AND b.id=?", keyID).Get(user)
+	has, err := x.SQL("SELECT a.* FROM `user` AS a, public_key AS b WHERE a.id = b.owner_id AND b.id=?", keyID).Get(user)
 	if err != nil {
 		return nil, err
 	} else if !has {
-		return nil, ErrUserNotKeyOwner
+		return nil, errors.UserNotKeyOwner{keyID}
 	}
 	return user, nil
 }
@@ -861,7 +899,7 @@ func getUserByID(e Engine, id int64) (*User, error) {
 	if err != nil {
 		return nil, err
 	} else if !has {
-		return nil, ErrUserNotExist{id, ""}
+		return nil, errors.UserNotExist{id, ""}
 	}
 	return u, nil
 }
@@ -873,26 +911,26 @@ func GetUserByID(id int64) (*User, error) {
 
 // GetAssigneeByID returns the user with write access of repository by given ID.
 func GetAssigneeByID(repo *Repository, userID int64) (*User, error) {
-	has, err := HasAccess(&User{ID: userID}, repo, ACCESS_MODE_WRITE)
+	has, err := HasAccess(userID, repo, ACCESS_MODE_READ)
 	if err != nil {
 		return nil, err
 	} else if !has {
-		return nil, ErrUserNotExist{userID, ""}
+		return nil, errors.UserNotExist{userID, ""}
 	}
 	return GetUserByID(userID)
 }
 
-// GetUserByName returns user by given name.
+// GetUserByName returns a user by given name.
 func GetUserByName(name string) (*User, error) {
 	if len(name) == 0 {
-		return nil, ErrUserNotExist{0, name}
+		return nil, errors.UserNotExist{0, name}
 	}
 	u := &User{LowerName: strings.ToLower(name)}
 	has, err := x.Get(u)
 	if err != nil {
 		return nil, err
 	} else if !has {
-		return nil, ErrUserNotExist{0, name}
+		return nil, errors.UserNotExist{0, name}
 	}
 	return u, nil
 }
@@ -905,7 +943,9 @@ func GetUserEmailsByNames(names []string) []string {
 		if err != nil {
 			continue
 		}
-		mails = append(mails, u.Email)
+		if u.IsMailable() {
+			mails = append(mails, u.Email)
+		}
 	}
 	return mails
 }
@@ -968,7 +1008,7 @@ func ValidateCommitsWithEmails(oldCommits *list.List) *list.List {
 // GetUserByEmail returns the user object by given e-mail if exists.
 func GetUserByEmail(email string) (*User, error) {
 	if len(email) == 0 {
-		return nil, ErrUserNotExist{0, "email"}
+		return nil, errors.UserNotExist{0, "email"}
 	}
 
 	email = strings.ToLower(email)
@@ -992,7 +1032,7 @@ func GetUserByEmail(email string) (*User, error) {
 		return GetUserByID(emailAddress.UID)
 	}
 
-	return nil, ErrUserNotExist{0, email}
+	return nil, errors.UserNotExist{0, email}
 }
 
 type SearchUserOptions struct {
@@ -1047,7 +1087,7 @@ func SearchUserByName(opts *SearchUserOptions) (users []*User, _ int64, _ error)
 
 // Follow represents relations of user and his/her followers.
 type Follow struct {
-	ID       int64 `xorm:"pk autoincr"`
+	ID       int64
 	UserID   int64 `xorm:"UNIQUE(follow)"`
 	FollowID int64 `xorm:"UNIQUE(follow)"`
 }
@@ -1064,7 +1104,7 @@ func FollowUser(userID, followID int64) (err error) {
 	}
 
 	sess := x.NewSession()
-	defer sessionRelease(sess)
+	defer sess.Close()
 	if err = sess.Begin(); err != nil {
 		return err
 	}
@@ -1090,7 +1130,7 @@ func UnfollowUser(userID, followID int64) (err error) {
 	}
 
 	sess := x.NewSession()
-	defer sessionRelease(sess)
+	defer sess.Close()
 	if err = sess.Begin(); err != nil {
 		return err
 	}

@@ -7,12 +7,14 @@ package models
 import (
 	"fmt"
 	"strings"
+
+	"github.com/gogits/gogs/models/errors"
 )
 
 // EmailAdresses is the list of all email addresses of a user. Can contain the
 // primary email address, but is not obligatory.
 type EmailAddress struct {
-	ID          int64  `xorm:"pk autoincr"`
+	ID          int64
 	UID         int64  `xorm:"INDEX NOT NULL"`
 	Email       string `xorm:"UNIQUE NOT NULL"`
 	IsActivated bool
@@ -58,7 +60,15 @@ func isEmailUsed(e Engine, email string) (bool, error) {
 		return true, nil
 	}
 
-	return e.Get(&EmailAddress{Email: email})
+	has, err := e.Get(&EmailAddress{Email: email})
+	if err != nil {
+		return false, err
+	} else if has {
+		return true, nil
+	}
+
+	// We need to check primary email of users as well.
+	return e.Where("type=?", USER_TYPE_INDIVIDUAL).And("email=?", email).Get(new(User))
 }
 
 // IsEmailUsed returns true if the email has been used.
@@ -111,10 +121,12 @@ func (email *EmailAddress) Activate() error {
 	if err != nil {
 		return err
 	}
-	user.Rands = GetUserSalt()
+	if user.Rands, err = GetUserSalt(); err != nil {
+		return err
+	}
 
 	sess := x.NewSession()
-	defer sessionRelease(sess)
+	defer sess.Close()
 	if err = sess.Begin(); err != nil {
 		return err
 	}
@@ -153,11 +165,11 @@ func MakeEmailPrimary(email *EmailAddress) error {
 	if err != nil {
 		return err
 	} else if !has {
-		return ErrEmailNotExist
+		return errors.EmailNotFound{email.Email}
 	}
 
 	if !email.IsActivated {
-		return ErrEmailNotActivated
+		return errors.EmailNotVerified{email.Email}
 	}
 
 	user := &User{ID: email.UID}
@@ -165,7 +177,7 @@ func MakeEmailPrimary(email *EmailAddress) error {
 	if err != nil {
 		return err
 	} else if !has {
-		return ErrUserNotExist{email.UID, ""}
+		return errors.UserNotExist{email.UID, ""}
 	}
 
 	// Make sure the former primary email doesn't disappear.
@@ -176,7 +188,7 @@ func MakeEmailPrimary(email *EmailAddress) error {
 	}
 
 	sess := x.NewSession()
-	defer sessionRelease(sess)
+	defer sess.Close()
 	if err = sess.Begin(); err != nil {
 		return err
 	}
